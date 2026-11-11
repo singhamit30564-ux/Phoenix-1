@@ -96,8 +96,10 @@ test('all thirty-five PHYLIP programs are present', () => {
 test('every program runs end to end and returns a renderable result', () => {
   for (const program of P.PROGRAM_LIST) {
     const result = runProgram(program.id);
-    assert.ok(['tree', 'matrix', 'report'].includes(result.kind), `${program.id} result kind`);
-    if (result.kind === 'tree') {
+    assert.ok(['tree', 'matrix', 'report', 'interactive'].includes(result.kind), `${program.id} result kind`);
+    if (result.kind === 'interactive') {
+      assert.ok(result.session && typeof result.session.score === 'function', `${program.id} session`);
+    } else if (result.kind === 'tree') {
       assert.ok(result.svg.includes('<svg'), `${program.id} draws an SVG`);
       assert.ok(C.leaves(result.tree).length >= 2, `${program.id} tree has leaves`);
     } else {
@@ -309,9 +311,10 @@ test('rerooting on an outgroup places it first', () => {
 
 // ------------------------------------------------------- program behaviour
 
-test('DNAINVAR counts the split supported by the data', () => {
+test('DNAINVAR identifies the split supported by the data', () => {
   const result = runProgram('DNAINVAR');
-  assert.strictEqual(result.stats[1].value, '12|34');
+  assert.match(result.stats[1].value, /\(A,C\) \| \(B,D\)/);
+  assert.match(result.text, /Invariant residual/i);
 });
 
 test('distance programs return symmetric matrices with zero diagonals', () => {
