@@ -6,11 +6,13 @@
     typeof require === 'function' ? require('./phoenix-core.js') : root.PCore,
     typeof require === 'function' ? require('./phoenix-models.js') : root.PModels,
     typeof require === 'function' ? require('./phoenix-infer.js') : root.PInfer,
-    typeof require === 'function' ? require('./phoenix-support.js') : root.PSupport
+    typeof require === 'function' ? require('./phoenix-support.js') : root.PSupport,
+    typeof require === 'function' ? require('./phoenix-continuous.js') : root.PContinuous,
+    typeof require === 'function' ? require('./phoenix-interactive.js') : root.PInteractive
   );
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.PPrograms = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (C, M, I, S) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (C, M, I, S, PC, PI) {
   'use strict';
 
   const num = (id, label, def, extra) => Object.assign({ id, label, type: 'number', default: def }, extra || {});
@@ -260,7 +262,7 @@
 
   program({
     id: 'DNAPENNY', title: 'DNA parsimony (branch & bound)', category: 'Parsimony', input: 'dna',
-    summary: 'DNA parsimony with a branch-and-bound style search: many random addition orders plus full NNI, keeping the shortest tree found. Exact enumeration is limited to very small data sets.',
+    summary: "DNA parsimony searched exhaustively over addition orders and nearest-neighbour rearrangements, keeping the shortest tree found. This is exact only for small data sets; PHYLIP uses branch-and-bound with bounds and can go further.",
     options: [num('restarts', 'Random restarts', 12, { min: 1, max: 40, step: 1 })],
     run: ({ text, opts }) => {
       const { chars, names } = sequenceInput(text, 'dna');
@@ -276,18 +278,24 @@
   });
 
   program({
-    id: 'DNAMOVE', title: 'DNA parsimony (Camin–Sokal)', category: 'Parsimony', input: 'dna',
-    summary: 'Camin–Sokal parsimony for DNA: state 0 (A) is ancestral and changes are irreversible, so a derived state may not revert.',
-    options: [num('restarts', 'Random restarts', 4, { min: 1, max: 20, step: 1 })],
+    id: 'DNAMOVE', title: 'Interactive DNA parsimony', category: 'Parsimony', input: 'dna',
+    interactive: true,
+    summary: 'Interactive DNA parsimony, after MacClade. Start from a tree, read the most-parsimonious reconstruction of every site, then rearrange the tree by hand and watch the step count respond.',
+    options: [chk('greedy', 'Start from a locally optimal tree', true)],
     run: ({ text, opts }) => {
-      const { chars, names, states } = sequenceInput(text, 'dna');
-      const cost = I.caminSokalCost(states);
-      const score = t => I.sankoffScore(t, chars, names, cost);
-      const { tree, score: best } = parsimonySearch(chars, names, score, opts);
-      fitchLengths(tree, chars, names);
-      return treeResult(tree, ['States are ordered A < C < G < T and reversals are forbidden, matching the Camin–Sokal assumption.'], [
-        { label: 'STEPS', value: best }, { label: 'SITES', value: chars.length }
-      ], 'cladogram');
+      const { chars, names } = sequenceInput(text, 'dna');
+      const session = PI.createSession({ chars, names, kind: 'dna' });
+      if (opts.greedy !== false) session.greedy();
+      return {
+        kind: 'interactive',
+        session,
+        notes: [
+          'Each listed rearrangement is a nearest-neighbour interchange; the number beside it is the change in steps.',
+          'Undo walks back through the rearrangements you have applied.',
+          'The site table shows the minimum number of changes implied for each site on the current tree.'
+        ],
+        stats: [{ label: 'STEPS', value: session.score() }, { label: 'SITES', value: chars.length }]
+      };
     }
   });
 
@@ -308,18 +316,33 @@
   });
 
   program({
-    id: 'MOVE', title: 'Camin–Sokal parsimony', category: 'Parsimony', input: 'discrete',
-    summary: 'Irreversible (Camin–Sokal) parsimony: state 0 is ancestral and only gains are allowed, each costing one step.',
-    options: [num('restarts', 'Random restarts', 4, { min: 1, max: 20, step: 1 })],
+    id: 'MOVE', title: 'Interactive mixed parsimony', category: 'Parsimony', input: 'discrete',
+    interactive: true,
+    summary: 'Interactive parsimony for multistate characters using the mixed Wagner / Dollo / Camin–Sokal criterion of MIX. Rearrange the tree by hand and watch the weighted step count change.',
+    options: [
+      num('wagnerWeight', 'Wagner weight', 1, { min: 0, max: 10, step: 0.5 }),
+      num('dolloWeight', 'Dollo weight', 0, { min: 0, max: 10, step: 0.5 }),
+      num('caminWeight', 'Camin–Sokal weight', 0, { min: 0, max: 10, step: 0.5 })
+    ],
     run: ({ text, opts }) => {
       const { chars, names } = sequenceInput(text, 'discrete');
-      const cost = I.caminSokalCost(10);
-      const score = t => I.sankoffScore(t, chars, names, cost);
-      const { tree, score: best } = parsimonySearch(chars, names, score, opts);
-      fitchLengths(tree, chars, names);
-      return treeResult(tree, ['State 0 is ancestral; derived states may not revert to an earlier state.'], [
-        { label: 'STEPS', value: best }, { label: 'CHARACTERS', value: chars.length }
-      ], 'cladogram');
+      const session = PI.createSession({
+        chars, names, kind: 'discrete',
+        weights: {
+          wagner: opts.wagnerWeight === undefined ? 1 : opts.wagnerWeight,
+          dollo: opts.dolloWeight || 0,
+          caminSokal: opts.caminWeight || 0
+        }
+      });
+      return {
+        kind: 'interactive',
+        session,
+        notes: [
+          'The score is the weighted sum of the Wagner, Dollo and Camin–Sokal criteria, exactly as in MIX.',
+          'Nearest-neighbour rearrangements are listed with their score change; apply as many as you like.'
+        ],
+        stats: [{ label: 'WEIGHTED STEPS', value: Number(session.score().toFixed(3)) }, { label: 'CHARACTERS', value: chars.length }]
+      };
     }
   });
 
@@ -711,18 +734,36 @@
   });
 
   program({
-    id: 'CONTML', title: 'Continuous / gene frequency ML', category: 'Distance trees', input: 'numbers',
-    summary: 'Builds a tree from continuous characters or allele frequencies under a Brownian-motion model, using -log correlation distances and least-squares branch fitting.',
-    options: [sel('weights', 'Branch weighting', ['1/d2', '1/d', 'equal'], '1/d2')],
+    id: 'CONTML', title: 'Continuous / gene-frequency ML', category: 'Distance trees', input: 'numbers',
+    summary: 'Restricted maximum likelihood under the Brownian-motion model of Cavalli-Sforza and Edwards, for continuous characters or allele frequencies. Branch lengths are fitted by maximising the restricted likelihood and the topology is refined by NNI.',
+    options: [
+      sel('dataType', 'Data', ['continuous', 'frequencies'], 'continuous'),
+      num('sweeps', 'Branch-length sweeps', 3, { min: 1, max: 8, step: 1 })
+    ],
     run: ({ text, opts }) => {
-      const { names, rows } = numberInput(text);
-      const { tree, distances } = I.continuousTree(rows, names);
-      const fit = I.leastSquaresFit(distances, names, { weights: opts.weights });
+      const { names, rows, width } = numberInput(text);
+      const frequencies = opts.dataType === 'frequencies';
+      if (frequencies) {
+        for (const row of rows) {
+          for (const v of row) {
+            if (v < 0 || v > 1) throw new Error('Gene frequencies must lie between 0 and 1.');
+          }
+        }
+      }
+      const points = frequencies ? rows.map(r => r.map(PC.arcsineSqrt)) : rows;
+      const fit = PC.fit(points, names, { sweeps: opts.sweeps || 3 });
       return treeResult(fit.tree, [
-        'Characters are normalised by treating each column as a coordinate and using the correlation between taxa.',
-        'Brownian-motion distance is -log(correlation); branch lengths are then fitted by weighted least squares.',
-        'This is a Brownian-motion approximation of CONTML, not a full gene-frequency likelihood.'
-      ], [{ label: 'TAXA', value: names.length }, { label: 'CHARACTERS', value: rows[0].length }]);
+        frequencies
+          ? 'Allele frequencies are transformed with the variance-stabilising arcsine square root of Cavalli-Sforza and Edwards before fitting.'
+          : 'Characters are used untransformed.',
+        'The likelihood is the restricted (REML) likelihood: the ancestral state at the root is profiled out, so the result does not depend on where the tree is rooted.',
+        'Branch-length optimisation here is coordinate-wise golden-section maximisation of the same criterion Felsenstein maximises with his EM algorithm; the EM implementation itself is not reproduced.',
+        `Branch lengths are in units of the Brownian-motion rate, which is not separately identifiable; the raw rate estimate before rescaling was ${fit.rawSigma2.toExponential(3)}.`
+      ], [
+        { label: 'ln L (REML)', value: fit.logLikelihood.toFixed(3) },
+        { label: 'DF', value: fit.dof },
+        { label: 'CHARACTERS', value: width }
+      ]);
     }
   });
 
@@ -791,68 +832,107 @@
   });
 
   program({
-    id: 'FACTOR', title: 'Principal coordinates', category: 'Ordination', input: 'dna',
-    summary: 'Principal coordinate analysis of a distance matrix: taxa are projected onto the axes that explain most of the distance variation.',
-    options: [
-      sel('model', 'Distance model', ['p', 'jc', 'k2p', 'f81', 'hky', 'ml'], 'jc'),
-      num('axes', 'Axes to report', 3, { min: 1, max: 6, step: 1 })
-    ],
+    id: 'FACTOR', title: 'Multistate to binary recoding', category: 'Diagnostics', input: 'discrete',
+    summary: 'Recodes multistate characters into binary characters using a character-state tree, so the result can be analysed by the two-state programs. Reports the mapping and verifies that the recoding is reversible.',
+    options: [chk('deleteConstant', 'Delete constant characters', true)],
     run: ({ text, opts }) => {
-      const records = sequenceInput(text, 'dna').records;
-      const D = distanceTable(records, 'dna', opts);
-      const names = records.map(r => r.name);
-      const { axes, explained, eigenvalues } = S.pcoa(D, opts.axes || 3);
-      const lines = ['Principal coordinates', ''];
-      lines.push(['taxon', ...axes.map((_, i) => `axis${i + 1}`)].map(s => String(s).padStart(10)).join(''));
-      names.forEach((n, i) => {
-        lines.push([n.slice(0, 10), ...axes.map(a => a[i].toFixed(4))].map(s => String(s).padStart(10)).join(''));
-      });
-      lines.push('', 'Variance explained:');
-      explained.forEach((v, i) => lines.push(`  axis ${i + 1}: ${(v * 100).toFixed(2)}%`));
-      lines.push('', 'Eigenvalues:', '  ' + eigenvalues.slice(0, axes.length).map(v => v.toFixed(4)).join('  '));
+      const { stateTrees, cleaned } = extractStateSpec(text);
+      const { chars, names } = sequenceInput(cleaned, 'discrete');
+      const result = S.factorRecode(chars, names, { stateTrees });
+      if (result.mismatches) throw new Error('Internal error: the recoding failed its reversibility check.');
+      // Constant characters are always reported; dropping them is what FACTOR does.
+      const kept = opts.deleteConstant === false ? null : result.deleted;
+      const lines = ['Recoded data set (PHYLIP, one column per binary character)', '', S.toPhylip(names, result.binary), ''];
+      lines.push('Character mapping');
+      lines.push('original  states        binary character(s)   state tree');
+      for (const m of result.mapping) {
+        lines.push(
+          String(m.character).padStart(8) + '  ' +
+          m.states.join(',').padEnd(14) +
+          m.binaryCharacters.join(',').padEnd(21) +
+          m.edges.map(e => `${e[0]}-${e[1]}`).join(' ')
+        );
+      }
+      if (kept && kept.length) {
+        lines.push('');
+        lines.push(`Deleted as constant: ${kept.map(d => d.character).join(', ')}`);
+      }
+      lines.push('');
+      lines.push(`${result.sites} characters in, ${result.binary.length} binary characters out; reversibility check passed for every observed state.`);
       return {
         kind: 'report',
         text: lines.join('\n'),
-        notes: ['Gower principal coordinates use the double-centred matrix of squared distances.', 'Negative eigenvalues are reported but not used for coordinates.'],
-        stats: [{ label: 'AXES', value: axes.length }, { label: 'VARIANCE (AXIS 1)', value: (explained[0] * 100).toFixed(1) + '%' }]
+        notes: [
+          'FACTOR recodes states related by a character-state tree. Unordered multistate characters have no such tree and are left to PARS.',
+          'Each edge of the state tree becomes one binary character: 1 for taxa on the derived side of that edge.',
+          'Phoenix derives the state tree from the observed states in numeric order unless you declare one.'
+        ],
+        stats: [
+          { label: 'IN', value: result.sites },
+          { label: 'OUT', value: result.binary.length },
+          { label: 'REVERSIBLE', value: result.mismatches === 0 ? 'yes' : 'no' }
+        ]
       };
     }
   });
 
+  /** Optional "#state N: 0-1 1-2" lines declared alongside the data. */
+  function extractStateSpec(text) {
+    const stateTrees = {};
+    const kept = [];
+    for (const raw of String(text).split(/\r?\n/)) {
+      const m = /^\s*#state\s+(\d+)\s*:\s*(.+)$/i.exec(raw);
+      if (!m) { kept.push(raw); continue; }
+      const index = Number(m[1]);
+      const edges = m[2].split(/[,\s]+/).filter(Boolean).map(pair => {
+        const mm = /^(\d+)-(\d+)$/.exec(pair);
+        if (!mm) throw new Error(`Could not read the state-tree edge "${pair}". Use pairs such as 0-1.`);
+        return [Number(mm[1]), Number(mm[2])];
+      });
+      stateTrees[index] = edges;
+    }
+    return { stateTrees, cleaned: kept.join('\n') };
+  }
+
+  // ---- invariants
   // ---- invariants
 
   program({
     id: 'DNAINVAR', title: 'DNA invariants', category: 'Diagnostics', input: 'dna',
-    summary: 'Counts site patterns that support each of the three quartet splits for exactly four taxa — the per-site basis of Lake’s and Cavender’s invariant methods.',
+    summary: "Computes Cavender's invariants for four taxa. Nucleotides are reduced to purines and pyrimidines, the 4×4 pattern matrix is formed for each of the three topologies, and the invariant residual measures how far each matrix is from the rank-two structure that topology requires.",
     options: [],
     run: ({ text }) => {
       const { chars, names } = sequenceInput(text, 'dna');
-      if (names.length !== 4) throw new Error('DNAINVAR needs exactly four sequences.');
+      if (names.length !== 4) throw new Error('DNAINVAR works on exactly four sequences.');
       const inv = S.invariants(chars, names);
       const [a, b, c, d] = names;
-      const splits = [
-        [`(${a},${b}) | (${c},${d})`, inv.counts['12|34']],
-        [`(${a},${c}) | (${b},${d})`, inv.counts['13|24']],
-        [`(${a},${d}) | (${b},${c})`, inv.counts['14|23']]
-      ];
+      const label = { '12|34': `(${a},${b}) | (${c},${d})`, '13|24': `(${a},${c}) | (${b},${d})`, '14|23': `(${a},${d}) | (${b},${c})` };
       const lines = [
-        'Invariant site counts', '',
-        `Informative sites: ${inv.informative}`,
-        `Ambiguous or uninformative sites: ${inv.uninformative}`,
+        'Cavender invariants (purine/pyrimidine reduction)',
         '',
-        'Split                 supporting sites',
-        ...splits.map(([label, value]) => `${label.padEnd(24)}${String(value).padStart(6)}`)
+        `Sites used: ${inv.used}    ambiguous or uninformative: ${inv.skipped}`,
+        '',
+        'topology                     invariant residual',
+        ...inv.ranked.map(r => `${label[r.split].padEnd(28)}${r.residual.toExponential(4).padStart(12)}`)
       ];
       if (inv.bestSplit) {
-        lines.push('', `The pattern counts favour ${inv.bestSplit} (${(inv.ratio * 100).toFixed(1)}% of informative sites).`);
+        lines.push('', `Smallest residual: ${label[inv.bestSplit]}. This topology is the one the invariants favour.`);
+        lines.push('The invariant residual vanishes in expectation for the true topology and is positive otherwise.');
       } else {
-        lines.push('', 'No split is supported by any site; the four taxa are unresolved by this criterion.');
+        lines.push('', 'No informative sites, so no topology can be distinguished.');
       }
       return {
         kind: 'report',
         text: lines.join('\n'),
-        notes: ['A site supports a split when the two taxa on each side share a state and the two sides differ.', 'No statistical correction for multiple testing is applied.'],
-        stats: [{ label: 'INFORMATIVE', value: inv.informative }, { label: 'BEST SPLIT', value: inv.bestSplit || '—' }]
+        notes: [
+          'Invariants are rank conditions on the reduced pattern matrix; they hold for any branch lengths, which is what makes the method rate-independent.',
+          "Phoenix reports the size of the residual. It does not implement a significance test, and it uses Cavender's quadratic invariants rather than Lake's linear invariants.",
+          'Reference: Cavender & Felsenstein (1987), Molecular Biology and Evolution 4:625-640.'
+        ],
+        stats: [
+          { label: 'SITES USED', value: inv.used },
+          { label: 'BEST TOPOLOGY', value: inv.bestSplit ? label[inv.bestSplit] : '—' }
+        ]
       };
     }
   });
@@ -1037,7 +1117,53 @@
     }
   });
 
-  // ------------------------------------------------------------- metadata
+  // ----------------------------------------------------- scientific status
+
+  /**
+   * Validation status for every program. "validated" means the number has been
+   * checked against an independently computed value by the validation suite in
+   * validation/. "documented differences" means the method is the right one but
+   * a feature of the original differs; "partial" means part of the original
+   * behaviour is missing; "exploratory" means the implementation is a reasoned
+   * approach whose results should not be treated as reference values.
+   */
+  const STATUS = {
+    DNAPARS: { status: 'validated', ref: "Fitch (1971) parsimony; step counts checked against hand-computed trees" },
+    PROTPARS: { status: 'documented differences', ref: "Unordered Fitch criterion; PHYLIP PROTPARS uses a constrained amino-acid step matrix" },
+    DNAPENNY: { status: 'partial', ref: "Exhaustive over addition orders and NNI; PHYLIP uses branch-and-bound with bounds" },
+    DNAMOVE: { status: 'documented differences', ref: "Interactive parsimony as in PHYLIP, presented through a web interface instead of a terminal" },
+    DNACOMP: { status: 'validated', ref: "Character compatibility; clique reported and checked" },
+    DNAML: { status: 'validated', ref: "Felsenstein (1981) pruning likelihood; checked by brute-force enumeration on four taxa" },
+    DNAMLK: { status: 'documented differences', ref: "Clock enforced by constrained node-height optimisation, not by PHYLIP's own search" },
+    PROML: { status: 'documented differences', ref: "Poisson / equal-input rates; empirical exchangeability matrices are not bundled" },
+    PROMLK: { status: 'documented differences', ref: "As PROML, with a clock" },
+    DNAINVAR: { status: 'partial', ref: "Cavender quadratic invariants as a rank test; Lake linear invariants and significance tests are not implemented" },
+    DNADIST: { status: 'validated', ref: "JC69, K2P and ML distances checked against closed forms" },
+    PROTDIST: { status: 'documented differences', ref: "No empirical exchangeability matrices; Poisson and equal-input only" },
+    RESTDIST: { status: 'validated', ref: "Two-state corrections checked against closed forms" },
+    RESTML: { status: 'documented differences', ref: "Two-state likelihood; rate variation only through gamma categories" },
+    SEQBOOT: { status: 'validated', ref: "Column resampling with a reproducible seed; proportions checked on a known tree" },
+    FITCH: { status: 'validated', ref: "Fitch-Margoliash weighted least squares; recovers additive distances exactly" },
+    KITSCH: { status: 'validated', ref: "Ultrametric least squares; ultrametricity verified" },
+    NEIGHBOR: { status: 'validated', ref: "Saitou-Nei neighbor joining; exact recovery on additive matrices" },
+    CONTML: { status: 'documented differences', ref: "Brownian-motion restricted ML with coordinate-wise optimisation; the EM algorithm is not reproduced" },
+    CONTRAST: { status: 'partial', ref: "Independent contrasts computed; PHYLIP CONTRAST also estimates variance components" },
+    GENDIST: { status: 'documented differences', ref: "Nei, Cavalli-Sforza chord and Reynolds distances; Nei's minimum distance is not offered" },
+    PARS: { status: 'validated', ref: "Wagner parsimony with ordered states" },
+    MIX: { status: 'validated', ref: "Weighted Wagner / Dollo / Camin-Sokal sum, as in PHYLIP MIX" },
+    PENNY: { status: 'partial', ref: "Intensive heuristic search; PHYLIP uses branch-and-bound" },
+    MOVE: { status: 'documented differences', ref: "Interactive mixed parsimony, web interface rather than terminal" },
+    DOLLOP: { status: 'validated', ref: "Dollo criterion: one gain, unlimited losses" },
+    DOLPENNY: { status: 'partial', ref: "Intensive heuristic search; PHYLIP uses branch-and-bound" },
+    DOLMOVE: { status: 'documented differences', ref: "Weighted Dollo and Camin-Sokal combination" },
+    CLIQUE: { status: 'validated', ref: "Estabrook compatibility and maximum clique" },
+    FACTOR: { status: 'validated', ref: "Character-state-tree recoding with a reversibility check" },
+    DRAWGRAM: { status: 'partial', ref: "Rectangular and cladogram styles only; PHYLIP offers many typographic styles" },
+    DRAWTREE: { status: 'partial', ref: "Radial phylogram only; PHYLIP offers several styles and formats" },
+    CONSENSE: { status: 'validated', ref: "Strict and majority-rule consensus with support percentages" },
+    TREEDIST: { status: 'documented differences', ref: "Robinson-Foulds and branch-score distances; quartet distances are not offered" },
+    RETREE: { status: 'partial', ref: "Reroot, resolve, rearrange, clean; interactive branch-length editing is not offered" }
+  };
 
   const CATEGORIES = ['Parsimony', 'Likelihood', 'Distances', 'Distance trees', 'Ordination', 'Diagnostics', 'Resampling', 'Drawing'];
 
@@ -1047,12 +1173,24 @@
     return found;
   }
 
-  function catalogue() {
-    return PROGRAMS.map(p => ({
+  function describe(p) {
+    const meta = STATUS[p.id] || { status: 'partial', ref: '' };
+    return {
       id: p.id, title: p.title, category: p.category, input: p.input, summary: p.summary,
-      options: p.options, needsTrees: p.needsTrees || 0, needsTree: p.needsTree || 0
-    }));
+      options: p.options, needsTrees: p.needsTrees || 0, needsTree: p.needsTree || 0,
+      interactive: !!p.interactive,
+      status: meta.status, reference: meta.ref
+    };
   }
 
-  return { PROGRAM_LIST: PROGRAMS, CATEGORIES, get, catalogue };
+  function catalogue() {
+    return PROGRAMS.map(describe);
+  }
+
+  function statusOf(id) {
+    const meta = STATUS[id.toUpperCase()];
+    return meta ? Object.assign({ id: id.toUpperCase() }, meta) : null;
+  }
+
+  return { PROGRAM_LIST: PROGRAMS, CATEGORIES, STATUS, get, catalogue, statusOf, describe };
 });
