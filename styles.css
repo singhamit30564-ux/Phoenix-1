@@ -43,3 +43,24 @@ textarea.tree-input{height:110px}
 .notes li{margin-bottom:5px}
 .output-actions{display:flex;gap:8px}
 @media(max-width:900px){.suite{grid-template-columns:1fr}.suite-nav{position:static;max-height:none}.program-stats{grid-template-columns:repeat(2,1fr)}}
+
+/* ---- scientific status + interactive parsimony ---- */
+.status-badge{font:9px 'DM Mono',monospace;letter-spacing:.6px;padding:6px 8px;border-radius:4px;margin-left:8px;white-space:nowrap}
+.status-validated{background:#e7f1e2;color:#3f6b4c}
+.status-documented-differences{background:#f5efdf;color:#8a6d2f}
+.status-partial{background:#f6e9e2;color:#96543a}
+.status-exploratory{background:#eceff5;color:#5b6480}
+.program-reference{margin:0 0 10px;font:10px/1.6 'DM Mono',monospace;color:#93a195}
+.program-reference:empty{display:none}
+.interactive-head{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;padding:4px 6px 12px}
+.interactive-score{display:block;font-size:26px;letter-spacing:-1px;color:#285f49;margin-top:4px}
+.interactive-actions{display:flex;gap:8px;flex-wrap:wrap}
+.interactive-tree{border-top:1px solid #edf2eb;border-bottom:1px solid #edf2eb;padding:8px 0}
+.interactive-tree svg{width:100%;height:auto;display:block}
+.interactive-moves{padding:10px 6px 2px}
+.interactive-moves .mini-label{display:block;margin-bottom:8px;font:9px 'DM Mono',monospace;color:#a3b0a5}
+.move-button{display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;text-align:left;background:#fff;border:1px solid #e4eae3;border-radius:5px;padding:8px 11px;margin-bottom:6px;cursor:pointer;font:11px 'DM Sans',sans-serif;color:#4b6b56}
+.move-button:hover{background:#f4f8f1;border-color:#cfe0c9}
+.move-button b{font:11px 'DM Mono',monospace;color:#8c9a8f}
+.move-button.is-improving{border-color:#cfe3c7;background:#f6faf3}
+.move-button.is-improving b{color:#3f6b4c}
