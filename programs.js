@@ -4,6 +4,7 @@
   const $ = id => document.getElementById(id);
   const P = window.PPrograms;
   const C = window.PCore;
+  const S = window.PSupport;
 
   const EXAMPLES = {
     dna: `>Human
@@ -70,6 +71,19 @@ E 0.50 0.10 0.20 0.20`,
 
   // ------------------------------------------------------------- catalogue
 
+  function ensureStatusNodes() {
+    if ($('programStatus')) return;
+    const badge = document.createElement('span');
+    badge.id = 'programStatus';
+    badge.className = 'status-badge';
+    badge.hidden = true;
+    $('programCategory').insertAdjacentElement('afterend', badge);
+    const ref = document.createElement('p');
+    ref.id = 'programReference';
+    ref.className = 'program-reference';
+    $('programCategory').closest('.card-heading').insertAdjacentElement('afterend', ref);
+  }
+
   function renderCatalogue(filter) {
     const container = $('programList');
     const term = (filter || '').trim().toLowerCase();
@@ -117,6 +131,17 @@ E 0.50 0.10 0.20 0.20`,
     $('programName').textContent = program.id;
     $('programTitle').textContent = program.title;
     $('programCategory').textContent = program.category.toUpperCase();
+    const meta = P.statusOf(program.id);
+    const badge = $('programStatus');
+    if (meta) {
+      badge.textContent = meta.status.toUpperCase();
+      badge.className = 'status-badge status-' + meta.status.replace(/\s+/g, '-');
+      badge.title = meta.ref || '';
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+    $('programReference').textContent = meta && meta.ref ? meta.ref : '';
     $('programSummary').textContent = program.summary;
     renderOptions(program);
     configureInput(program);
@@ -230,8 +255,20 @@ E 0.50 0.10 0.20 0.20`,
     $('downloadText').disabled = true;
   }
 
+  let activeSession = null;
+
   function render(result) {
     const view = $('programView');
+    if (result.kind === 'interactive') {
+      activeSession = result.session;
+      view.classList.remove('is-tree');
+      drawInteractive(result);
+      $('downloadNewick').disabled = false;
+      $('programNotes').innerHTML = (result.notes || []).map(n => `<li>${escapeHtml(n)}</li>`).join('');
+      $('programError').textContent = '';
+      return;
+    }
+    activeSession = null;
     if (result.kind === 'tree') {
       view.innerHTML = result.svg;
       view.classList.add('is-tree');
@@ -251,6 +288,55 @@ E 0.50 0.10 0.20 0.20`,
     $('programError').textContent = '';
   }
 
+  function drawInteractive(result) {
+    const session = activeSession;
+    const score = session.score();
+    const moves = session.moves().sort((a, b) => a.delta - b.delta).slice(0, 8);
+    const svg = S.drawRectangular(session.tree, { style: 'cladogram', width: 720, rowHeight: 24 });
+    const moveButtons = moves.map(m => `
+      <button class="move-button${m.delta < 0 ? ' is-improving' : ''}" data-move="${escapeAttr(m.id)}">
+        <span>${escapeHtml(m.label)}</span>
+        <b>${m.delta === 0 ? '±0' : (m.delta > 0 ? '+' : '') + m.delta}</b>
+      </button>`).join('') || '<p class="suite-empty">No rearrangements available.</p>';
+    $('programView').classList.remove('is-tree');
+    $('programView').innerHTML = `
+      <div class="interactive-head">
+        <div><span class="mini-label">STEPS ON THIS TREE</span><strong class="interactive-score">${score}</strong></div>
+        <div class="interactive-actions">
+          <button class="download" id="interactiveUndo" ${session.canUndo() ? '' : 'disabled'}>↶ Undo</button>
+          <button class="download" id="interactiveGreedy">↧ Finish search</button>
+          <button class="download" id="interactiveReset">↺ New tree</button>
+        </div>
+      </div>
+      <div class="interactive-tree">${svg}</div>
+      <div class="interactive-moves"><span class="mini-label">REARRANGEMENTS — APPLY ONE</span>${moveButtons}</div>`;
+    $('programText').textContent = siteTable(session);
+    $('programStats').innerHTML = (result.stats || []).slice(0, 1).map(st =>
+      `<div><span>${escapeHtml(st.label)}</span><strong>${escapeHtml(String(score))}</strong></div>`).join('')
+      + `<div><span>CHANGES SINCE START</span><strong>${session.historyLength()}</strong></div>`
+      + `<div><span>RUNTIME</span><strong>${result.elapsed} ms</strong></div>`;
+    $('downloadText').disabled = false;
+    $('programView').querySelectorAll('[data-move]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        session.apply(btn.dataset.move);
+        drawInteractive(result);
+      });
+    });
+    $('interactiveUndo').addEventListener('click', () => { session.undo(); drawInteractive(result); });
+    $('interactiveGreedy').addEventListener('click', () => { session.greedy(); drawInteractive(result); });
+    $('interactiveReset').addEventListener('click', () => { session.reset(); drawInteractive(result); });
+  }
+
+  function siteTable(session) {
+    const rows = session.siteReconstruction(10);
+    const lines = ['Most-parsimonious reconstruction on the current tree', ''];
+    lines.push('site   changes   states at the root');
+    for (const r of rows) lines.push(String(r.site).padStart(4) + '   ' + String(r.changes).padStart(5) + '     ' + r.states.join(','));
+    lines.push('');
+    lines.push('Apply rearrangements above and watch this table change.');
+    return lines.join('\n');
+  }
+
   // ------------------------------------------------------------- downloads
 
   function download(name, content, type) {
@@ -263,8 +349,9 @@ E 0.50 0.10 0.20 0.20`,
   }
 
   $('downloadNewick').addEventListener('click', () => {
-    if (!last || last.kind !== 'tree') return;
-    download(current.id.toLowerCase() + '.nwk', C.toNewick(last.tree) + '\n');
+    const tree = activeSession ? activeSession.tree : (last && last.kind === 'tree' ? last.tree : null);
+    if (!tree) return;
+    download(current.id.toLowerCase() + '.nwk', C.toNewick(tree) + '\n');
   });
 
   $('downloadText').addEventListener('click', () => {
@@ -284,6 +371,7 @@ E 0.50 0.10 0.20 0.20`,
     $('programError').textContent = '';
   });
 
+  ensureStatusNodes();
   renderCatalogue('');
   select('DNAPARS');
 })();
