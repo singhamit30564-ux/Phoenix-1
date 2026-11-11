@@ -1,0 +1,438 @@
+{
+  "suite": "Phoenix scientific validation",
+  "version": "0.3.0",
+  "generatedAt": "2026-11-11T16:59:29.335Z",
+  "summary": {
+    "checks": 36,
+    "passed": 36,
+    "failed": 0,
+    "categories": {
+      "distances": {
+        "total": 3,
+        "passed": 3
+      },
+      "models": {
+        "total": 2,
+        "passed": 2
+      },
+      "likelihood": {
+        "total": 3,
+        "passed": 3
+      },
+      "parsimony": {
+        "total": 5,
+        "passed": 5
+      },
+      "tree building": {
+        "total": 4,
+        "passed": 4
+      },
+      "continuous ml": {
+        "total": 4,
+        "passed": 4
+      },
+      "recoding": {
+        "total": 2,
+        "passed": 2
+      },
+      "invariants": {
+        "total": 2,
+        "passed": 2
+      },
+      "support": {
+        "total": 4,
+        "passed": 4
+      },
+      "tree comparison": {
+        "total": 2,
+        "passed": 2
+      },
+      "input handling": {
+        "total": 2,
+        "passed": 2
+      },
+      "tree io": {
+        "total": 1,
+        "passed": 1
+      },
+      "interactive": {
+        "total": 1,
+        "passed": 1
+      },
+      "integration": {
+        "total": 1,
+        "passed": 1
+      }
+    },
+    "status": "PASS"
+  },
+  "notes": [
+    "Each check compares Phoenix output with a value obtained independently: a closed form, an exhaustive enumeration, a hand computation, or a simulation with a known generating process.",
+    "Tolerances reflect floating-point and optimisation noise; they are stated per check.",
+    "These checks establish implementation correctness against mathematical references. They are not a claim of bit-for-bit agreement with PHYLIP."
+  ],
+  "checks": [
+    {
+      "id": "dist.jc",
+      "category": "distances",
+      "description": "Jukes-Cantor distance matches the closed form -3/4 ln(1-4p/3)",
+      "reference": "closed-form JC69 formula",
+      "expected": 0.051744653615213576,
+      "actual": 0.0517446536152,
+      "tolerance": 1e-9,
+      "pass": true
+    },
+    {
+      "id": "dist.k2p",
+      "category": "distances",
+      "description": "K2P distance matches the closed form for the same transition/transversion counts",
+      "reference": "closed-form K80 formula",
+      "expected": 0.6981978573893253,
+      "actual": 0.698197857389,
+      "tolerance": 1e-9,
+      "pass": true
+    },
+    {
+      "id": "dist.ml-k2p",
+      "category": "distances",
+      "description": "HKY with equal frequencies reproduces the K2P closed-form distance",
+      "reference": "numerical ML must agree with the analytic K2P solution when the models coincide",
+      "expected": 0.06565210872491622,
+      "actual": 0.066153643956,
+      "tolerance": 0.002,
+      "pass": true
+    },
+    {
+      "id": "models.semigroup",
+      "category": "models",
+      "description": "P(t1)P(t2) = P(t1+t2) for a GTR generator",
+      "reference": "matrix exponential semigroup property",
+      "expected": 0,
+      "actual": 2.22044604925e-16,
+      "tolerance": 1e-10,
+      "pass": true
+    },
+    {
+      "id": "models.stochastic",
+      "category": "models",
+      "description": "Transition matrix rows sum to one",
+      "reference": "definition of a stochastic matrix",
+      "expected": 0,
+      "actual": 5.55111512313e-16,
+      "tolerance": 1e-12,
+      "pass": true
+    },
+    {
+      "id": "likelihood.bruteforce",
+      "category": "likelihood",
+      "description": "Felsenstein pruning equals exhaustive summation over all 16 internal-state combinations",
+      "reference": "brute-force enumeration written independently in this file",
+      "expected": -29.297873831230838,
+      "actual": -29.2978738312,
+      "tolerance": 1e-8,
+      "pass": true
+    },
+    {
+      "id": "likelihood.2taxon-mle",
+      "category": "likelihood",
+      "description": "Optimised branch lengths for two taxa sum to the JC69 distance",
+      "reference": "closed-form MLE for a two-taxon tree",
+      "expected": 0.30409883108112323,
+      "actual": 0.304098210368,
+      "tolerance": 0.005,
+      "pass": true
+    },
+    {
+      "id": "likelihood.2taxon-lik",
+      "category": "likelihood",
+      "description": "Two-taxon optimisation reaches a finite likelihood",
+      "reference": "sanity",
+      "expected": true,
+      "actual": true,
+      "tolerance": null,
+      "pass": true
+    },
+    {
+      "id": "parsimony.fitch",
+      "category": "parsimony",
+      "description": "One character with two states costs one step on the correct tree",
+      "reference": "hand-computed Fitch score",
+      "expected": 1,
+      "actual": 1,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "parsimony.fitch-wrong",
+      "category": "parsimony",
+      "description": "The same character costs two steps on a conflicting tree",
+      "reference": "hand-computed Fitch score",
+      "expected": 2,
+      "actual": 2,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "parsimony.dollo",
+      "category": "parsimony",
+      "description": "Dollo needs a single gain on the tree that groups the derived taxa",
+      "reference": "Dollo definition: one gain, unlimited losses",
+      "expected": 1,
+      "actual": 1,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "parsimony.dollo-wrong",
+      "category": "parsimony",
+      "description": "Dollo needs a gain plus two losses on a conflicting tree",
+      "reference": "Dollo definition",
+      "expected": 2,
+      "actual": 2,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "parsimony.wagner",
+      "category": "parsimony",
+      "description": "Wagner costs one step for a single 0 -> 1 change",
+      "reference": "ordered-state cost matrix",
+      "expected": 1,
+      "actual": 1,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "nj.additive",
+      "category": "tree building",
+      "description": "Neighbor joining reproduces every pairwise path length of an additive matrix",
+      "reference": "path lengths measured on the generating tree",
+      "expected": 0,
+      "actual": 4.4408920985e-16,
+      "tolerance": 1e-9,
+      "pass": true
+    },
+    {
+      "id": "nj.topology",
+      "category": "tree building",
+      "description": "Neighbor joining recovers the generating topology",
+      "reference": "Robinson-Foulds symmetric difference against the generating tree",
+      "expected": 0,
+      "actual": 0,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "upgma.topology",
+      "category": "tree building",
+      "description": "UPGMA groups the two closest pairs",
+      "reference": "hand-computed clustering",
+      "expected": 0,
+      "actual": 0,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "upgma.ultrametric",
+      "category": "tree building",
+      "description": "Every triple satisfies the ultrametric three-point condition",
+      "reference": "ultrametric inequality",
+      "expected": true,
+      "actual": true,
+      "tolerance": null,
+      "pass": true
+    },
+    {
+      "id": "contml.root-invariance",
+      "category": "continuous ml",
+      "description": "The restricted likelihood does not depend on where the tree is rooted",
+      "reference": "REML invariance to root position",
+      "expected": 1.5636340587171578,
+      "actual": 1.5636340671,
+      "tolerance": 1e-8,
+      "pass": true
+    },
+    {
+      "id": "contml.scale-invariance",
+      "category": "continuous ml",
+      "description": "The restricted likelihood does not depend on the overall branch-length scale",
+      "reference": "Brownian-motion scale invariance",
+      "expected": 1.5636340587171578,
+      "actual": 1.5636340658,
+      "tolerance": 1e-8,
+      "pass": true
+    },
+    {
+      "id": "contml.topology",
+      "category": "continuous ml",
+      "description": "CONTML groups the two similar pairs",
+      "reference": "the generating structure of the data is two tight clusters",
+      "expected": 0,
+      "actual": 0,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "contml.density",
+      "category": "continuous ml",
+      "description": "Restricted likelihood matches an independent Gauss-Jordan evaluation",
+      "reference": "independent inverse, determinant and quadratic forms",
+      "expected": -2.1101187296547197,
+      "actual": -2.11011872965,
+      "tolerance": 1e-8,
+      "pass": true
+    },
+    {
+      "id": "factor.roundtrip",
+      "category": "recoding",
+      "description": "Every observed state decodes back to itself after binary recoding",
+      "reference": "the recoding is a bijection between states and edge patterns",
+      "expected": 0,
+      "actual": 0,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "factor.expands",
+      "category": "recoding",
+      "description": "A character with k observed states becomes k-1 binary characters",
+      "reference": "character-state-tree edge count",
+      "expected": true,
+      "actual": true,
+      "tolerance": null,
+      "pass": true
+    },
+    {
+      "id": "invariants.best-split",
+      "category": "invariants",
+      "description": "Invariant residuals are smallest for the topology that generated the data",
+      "reference": "simulation on ((1,2),(3,4)) with JC69, 3000 sites, fixed seed",
+      "expected": true,
+      "actual": true,
+      "tolerance": null,
+      "pass": true
+    },
+    {
+      "id": "invariants.ordering",
+      "category": "invariants",
+      "description": "The generating topology has the smaller invariant residual",
+      "reference": "invariant theory",
+      "expected": true,
+      "actual": true,
+      "tolerance": null,
+      "pass": true,
+      "detail": "true=3.618e+1 other=1.327e+3"
+    },
+    {
+      "id": "consensus.support",
+      "category": "support",
+      "description": "A split present in two of three trees is reported at 66.7%",
+      "reference": "exact proportion 2/3",
+      "expected": 66.6666666667,
+      "actual": 66.6666666667,
+      "tolerance": 0.000001,
+      "pass": true
+    },
+    {
+      "id": "consensus.strict",
+      "category": "support",
+      "description": "Strict consensus keeps no splits when the trees disagree",
+      "reference": "definition of strict consensus",
+      "expected": 0,
+      "actual": 0,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "treedist.rf",
+      "category": "tree comparison",
+      "description": "Two different topologies differ by two splits",
+      "reference": "Robinson-Foulds definition",
+      "expected": 2,
+      "actual": 2,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "treedist.identical",
+      "category": "tree comparison",
+      "description": "A tree has distance zero from itself",
+      "reference": "Robinson-Foulds definition",
+      "expected": 0,
+      "actual": 0,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "bootstrap.reproducible",
+      "category": "support",
+      "description": "The same seed produces identical bootstrap support",
+      "reference": "seeded resampling",
+      "expected": "AB:100.00",
+      "actual": "AB:100.00",
+      "tolerance": null,
+      "pass": true
+    },
+    {
+      "id": "bootstrap.support",
+      "category": "support",
+      "description": "A split supported by every site reaches 100% bootstrap support",
+      "reference": "resampling of a perfectly consistent alignment",
+      "expected": 100,
+      "actual": 100,
+      "tolerance": 1e-9,
+      "pass": true
+    },
+    {
+      "id": "missing.parsimony",
+      "category": "input handling",
+      "description": "A column of missing data does not change the parsimony score",
+      "reference": "missing cells are compatible with every state",
+      "expected": 2,
+      "actual": 2,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "missing.distance",
+      "category": "input handling",
+      "description": "A column of missing data does not change a pairwise distance",
+      "reference": "unobserved sites are skipped",
+      "expected": 0.2326161962278796,
+      "actual": 0.232616196228,
+      "tolerance": 1e-12,
+      "pass": true
+    },
+    {
+      "id": "newick.roundtrip",
+      "category": "tree io",
+      "description": "Newick serialisation and parsing preserve every branch length",
+      "reference": "serialise then parse the same tree",
+      "expected": 0,
+      "actual": 0,
+      "tolerance": 0.000001,
+      "pass": true
+    },
+    {
+      "id": "interactive.consistency",
+      "category": "interactive",
+      "description": "Applying a rearrangement produces exactly the score that was advertised, and undo restores the previous score",
+      "reference": "session bookkeeping",
+      "expected": true,
+      "actual": true,
+      "tolerance": null,
+      "pass": true,
+      "detail": "start=1"
+    },
+    {
+      "id": "programs.all-run",
+      "category": "integration",
+      "description": "All 35 programs execute and return a renderable result",
+      "reference": "integration sweep",
+      "expected": 0,
+      "actual": 0,
+      "tolerance": 0,
+      "pass": true
+    }
+  ]
+}
