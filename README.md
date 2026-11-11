@@ -9,7 +9,7 @@ Open `index.html` in a modern browser, or serve the folder with `python3 -m http
 ## Two ways in
 
 1. **Workspace** — the quick path: aligned DNA, a distance model, UPGMA, a tree.
-2. **Program suite** — the full toolchest. Pick any of the thirty-five PHYLIP programs from the sidebar, supply data, set options, run.
+2. **Program suite** — the full toolchest. Pick any of the thirty-five PHYLIP programs from the sidebar, supply data, set options, run. Each program shows a badge saying how far its implementation has been validated.
 
 ## The program suite
 
@@ -21,12 +21,12 @@ Every program reads FASTA or PHYLIP input (numeric and tree programs take their 
 | --- | --- |
 | `DNAPARS` | DNA parsimony, Fitch criterion, stepwise addition + NNI |
 | `DNAPENNY` | DNA parsimony with an intensive branch-and-bound style search |
-| `DNAMOVE` | DNA parsimony under the Camin–Sokal (irreversible) assumption |
+| `DNAMOVE` | Interactive DNA parsimony: rearrange the tree by hand, watch the steps change |
 | `DNACOMP` | DNA compatibility: tree from the largest compatible site set |
 | `PROTPARS` | Protein parsimony, unordered amino-acid replacements |
 | `PARS` | Wagner parsimony for ordered multistate characters |
 | `PENNY` | Wagner parsimony with intensive search |
-| `MOVE` | Camin–Sokal parsimony (state 0 ancestral, no reversals) |
+| `MOVE` | Interactive mixed parsimony (Wagner / Dollo / Camin–Sokal weights) |
 | `MIX` | Weighted combination of Wagner, Dollo and Camin–Sokal |
 | `DOLLOP` | Dollo parsimony: one gain per character, unlimited losses |
 | `DOLPENNY` | Dollo parsimony with intensive search |
@@ -60,7 +60,7 @@ Every program reads FASTA or PHYLIP input (numeric and tree programs take their 
 | `NEIGHBOR` | Neighbor joining or UPGMA from a distance matrix |
 | `FITCH` | Fitch–Margoliash least squares, no clock |
 | `KITSCH` | Fitch–Margoliash least squares with a clock |
-| `CONTML` | Tree from continuous characters or allele frequencies (Brownian motion) |
+| `CONTML` | Brownian-motion restricted maximum likelihood for continuous characters and gene frequencies |
 | `CONTRAST` | Felsenstein's independent contrasts on a supplied tree |
 
 ### Resampling, diagnostics, drawing
@@ -70,8 +70,8 @@ Every program reads FASTA or PHYLIP input (numeric and tree programs take their 
 | `SEQBOOT` | Bootstrap or jackknife replication, optionally searched and summarised into a supported tree |
 | `CONSENSE` | Strict, majority-rule or threshold consensus from many trees |
 | `RETREE` | Reroot on an outgroup, resolve polytomies, rearrange branches |
-| `DNAINVAR` | Per-site invariant counts for the three quartet splits |
-| `FACTOR` | Principal coordinate analysis of a distance matrix |
+| `DNAINVAR` | Cavender's invariants for the three quartet splits |
+| `FACTOR` | Multistate to binary recoding through a character-state tree |
 | `DRAWGRAM` | Rectangular phylogram or cladogram |
 | `DRAWTREE` | Radial unrooted phylogram |
 
@@ -85,22 +85,47 @@ Every program reads FASTA or PHYLIP input (numeric and tree programs take their 
 
 Missing data is handled per method: unobserved states are skipped when a distance is computed and treated as compatible with anything in parsimony.
 
+## Scientific status
+
+Phoenix is an independent reimplementation, not a port of the PHYLIP source, and it does not claim bit-for-bit agreement with PHYLIP. Every program carries a status:
+
+| Status | Meaning |
+| --- | --- |
+| **validated** | The method is implemented and its numbers are checked against an independent reference by `validation/validate.js`. |
+| **documented differences** | The method is the right one, but a feature or optimiser of the original differs, and the difference is written down. |
+| **partial** | Part of the original behaviour is missing. |
+
+The full matrix is in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md), generated from the program registry so it cannot drift from the code. The audit that led to the current state, including the four programs whose algorithms were wrong, is in [`docs/AUDIT.md`](docs/AUDIT.md). The mathematics is in [`docs/METHODS.md`](docs/METHODS.md).
+
+## Validation
+
+```bash
+npm test            # 47 unit and integration tests
+npm run validate    # 36 numerical checks, writes validation/report.json
+npm run check       # both
+```
+
+`validation/validate.js` compares Phoenix output with values obtained independently — closed-form distances, exhaustive enumeration of internal states for the likelihood, hand-computed parsimony scores, additive matrices for neighbor joining, simulations with a known generating topology for the invariant test, and an independent Gauss–Jordan evaluation for the Brownian-motion likelihood. Each check records its expected value, the actual value, the tolerance and the reference it used, in machine-readable form.
+
+These checks establish implementation correctness against mathematical references. They are not a validation against PHYLIP's own output, and they are not a substitute for comparing against published analyses.
+
 ## Fidelity and limitations
 
-Phoenix is an independent reimplementation, not a port of the PHYLIP source. Read this before treating any number as authoritative.
+Read this before treating any number as authoritative.
 
-- **Search is heuristic.** Parsimony and likelihood searches use stepwise addition, nearest-neighbour interchange and random restarts. They find good trees, not guaranteed optima. `DNAPENNY`, `PENNY`, `DOLPENNY` and `DNAMOVE` say "branch and bound" in PHYLIP's sense; here they run many more independent searches, which is exhaustive only for very small data sets.
+- **Search is heuristic.** Parsimony and likelihood searches use stepwise addition, nearest-neighbour interchange and random restarts. They find good trees, not guaranteed optima. `DNAPENNY`, `PENNY` and `DOLPENNY` search exhaustively over addition orders but do not implement branch-and-bound with bounds, so they are exact only for small data sets.
 - **Protein models are limited.** Empirical exchangeability matrices (JTT, Dayhoff, WAG, VT, PMB) are not bundled. Protein likelihood and distance use Poisson or equal-input rates, and the interface says so.
-- **CONTML** uses Brownian-motion distances (`-log` correlation) followed by least-squares branch fitting, not a full gene-frequency likelihood.
+- **CONTML** maximises the correct Brownian-motion restricted likelihood, but only relative branch lengths are identifiable: the rate and the branch-length scale cannot both be estimated. Felsenstein's EM algorithm is not reproduced; Phoenix uses coordinate-wise golden-section search on the same criterion.
 - **CONTRAST** resolves polytomies arbitrarily with near-zero branches and warns you when it does.
-- **DNAINVAR** counts site patterns supporting each quartet split. It applies no significance correction and works on exactly four taxa.
+- **DNAINVAR** computes Cavender's quadratic invariants (a rank condition on the reduced pattern matrix). Lake's linear invariants and any significance test are not implemented; exactly four taxa are required.
+- **FACTOR** recodes through a character-state tree derived from the observed states in numeric order, unless you declare one. PHYLIP's FACTOR takes the state trees from the input file.
 - **No alignment.** Sequences must already be aligned and of equal length. Phoenix does not align, translate or edit sequences.
 - **Scale.** The interface is tuned for tens of taxa, not thousands. Likelihood on more than a few dozen taxa will feel slow.
 - **Not for clinical use.** Results are for exploration and teaching.
 
 ## Tests
 
-Run `node --test tests/*.test.js` with Node.js 18 or newer. The suite covers parsing, distance models, tree building, parsimony scoring, likelihood, consensus, resampling and a run of all thirty-five programs.
+Run `npm test` with Node.js 18 or newer. The suite covers parsing, distance models, tree building, parsimony scoring, likelihood, consensus, resampling, recoding, invariants and Brownian-motion likelihood, and runs all thirty-five programs.
 
 ## Layout
 
@@ -109,11 +134,16 @@ Run `node --test tests/*.test.js` with Node.js 18 or newer. The suite covers par
 | `analysis.js` | The original small UPGMA engine used by the quick workspace |
 | `phoenix-core.js` | Parsing, character encoding, Newick, tree primitives |
 | `phoenix-models.js` | Substitution models, transition probabilities, pairwise distances |
+| `phoenix-linalg.js` | Cholesky factorisation, inverse, log-determinant |
 | `phoenix-infer.js` | UPGMA, neighbor joining, least squares, parsimony, likelihood |
+| `phoenix-continuous.js` | Brownian-motion restricted likelihood |
+| `phoenix-interactive.js` | Interactive parsimony sessions |
 | `phoenix-support.js` | Bootstrap, consensus, tree comparison, PCoA, compatibility, drawing |
 | `phoenix-programs.js` | The catalogue: thirty-five programs mapped onto the engine |
 | `programs.js` | Program browser UI |
 | `app.js`, `index.html`, `styles.css` | The workspace interface |
+| `validation/` | Numerical validation suite and its machine-readable report |
+| `docs/` | Audit, methods and compatibility matrix |
 
 Each engine file uses a small UMD wrapper, so the same code runs in the browser and under Node for tests.
 
