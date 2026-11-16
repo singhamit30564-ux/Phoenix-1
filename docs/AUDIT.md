@@ -10,11 +10,28 @@ evidence of anything.
 
 ## Summary of findings
 
+Two different partitions are useful, and they are counted separately. The
+**audit outcome** says what happened during the review; the **validation
+status** says how much is now claimed, and is the single source of truth
+(audited by the `docs.counts` check in `validation/validate.js`).
+
+Audit outcome:
+
 | | Count |
 | --- | --- |
 | Programs whose algorithm matched their PHYLIP counterpart | 25 |
-| Programs whose algorithm did **not** match and were corrected in this branch | 4 |
-| Programs whose algorithm partially matched and are now labelled | 6 |
+| Programs whose algorithm did **not** match and were corrected | 5 |
+| Programs whose search or feature set partially matched and are labelled | 5 |
+
+Current validation status, taken from the program registry:
+
+| Status | Programs |
+| --- | --- |
+| validated | 15 |
+| documented differences | 12 |
+| partial | 8 |
+| exploratory | 0 |
+| **total** | **35** |
 
 Four mappings were wrong and are corrected here:
 
@@ -134,3 +151,72 @@ These are stated rather than hidden:
 - `PROTPARS` uses the unordered Fitch criterion rather than PHYLIP's constrained
   step matrix.
 - No alignment is performed; sequences must already be aligned.
+
+## Second remediation round (review findings on PR #3)
+
+The review of PR #3 found four defects in the corrections themselves. They are
+recorded here because an audit that only lists the first round would be
+misleading.
+
+### 1. MOVE silently scored with Fitch
+
+`phoenix-interactive.js` selected the weighted criterion with
+
+```javascript
+if (weights.dollo || weights.caminSokal) { /* weighted */ }
+return I.fitchScore(...);
+```
+
+With the default weights (Wagner 1, Dollo 0, Camin–Sokal 0) the branch was not
+taken, so MOVE scored with the **unordered Fitch** criterion instead of ordered
+Wagner. On the data set `0,0,2,2` the two criteria give 2 and 1 respectively, so
+the error was invisible on inputs where they coincide.
+
+**Correction.** The criterion is now resolved explicitly by `resolveCriterion()`,
+which returns a named criterion rather than falling through: `fitch` for DNA and
+protein data, otherwise exactly one of `wagner`, `dollo`, `caminSokal` or
+`mixed`. An empty or invalid weight set raises an error instead of degrading to
+a different criterion. Each mode agrees numerically with the independent
+implementation in `phoenix-infer.js` (`sankoffScore`, `dolloScore`).
+
+### 2. Reconstruction ignored the active criterion
+
+`siteReconstruction()` used Fitch set intersection regardless of the criterion,
+so the states displayed for a Wagner, Dollo or Camin–Sokal score did not
+correspond to that score.
+
+**Correction.** For discrete data the score and the reconstruction now come from
+one dynamic program over (gains used, state), with per-edge costs supplied by
+the active criteria. The per-character reconstruction costs therefore sum
+exactly to the reported score in every mode, which the validation suite checks.
+Ties between equally parsimonious reconstructions are broken toward the lowest
+state index and this is stated in the interface.
+
+### 3. FACTOR constant-character option was inert
+
+`factorRecode()` removed constant characters before the `deleteConstant` option
+was consulted, so setting it to false changed nothing.
+
+**Correction.** The option has been removed. PHYLIP FACTOR does not have a
+"keep constant characters" switch: a character with no description line is
+omitted, and a described character whose states are all identical has a
+one-node state tree and therefore no edges, contributing no binary characters.
+Phoenix now reports those two cases separately (`omitted` and `constant`) and
+does exactly that.
+
+### 4. State trees were not validated
+
+The recoder built an adjacency graph and traversed it without checking that the
+graph was a tree. A cyclic or disconnected description would be traversed
+partially and produce a silently wrong recoding.
+
+**Correction.** `validateStateTree()` checks, before any recoding: pairs of
+valid state identifiers, no self-loops, no repeated edges, connectivity,
+acyclicity (union-find), and that every observed state appears in the tree.
+Errors name the character and the reason.
+
+### Still outstanding
+
+- No PHYLIP differential comparison has been performed. See
+  `validation/PHYLIP-DIFFERENTIAL.md` for the protocol that would be used and
+  an explicit statement that no results are claimed.
