@@ -624,6 +624,57 @@ function reconstructTree(root) {
     'registry is the single source of truth; the matrix is generated from it', 0, mismatches, 0);
 }
 
+// 31. Dollo gain budget against exhaustive enumeration
+{
+  // The gain budget is global, so a dynamic program that optimises each child
+  // subtree independently would allow one gain per sibling. This dataset needs
+  // three separate gains to look cheap; the true Dollo cost is 4.
+  const newick = '(((A,B),(C,D)),((E,F),(G,H)));';
+  const tree = C.parseNewick(newick);
+  const states = [1, 0, 1, 0, 1, 0, 0, 0];
+  const taxa = C.leaves(tree).map(l => l.name);
+  const records = C.parseFasta(taxa.map((n, i) => `>${n}\n${states[i]}`).join('\n'));
+  const chars = C.encode(records, C.alphabet('discrete'));
+  const names = records.map(r => r.name);
+
+  // Independent: enumerate all 2^7 internal-state assignments.
+  const internals = [];
+  (function walk(n) { if (n.children) { internals.push(n); n.children.forEach(walk); } })(tree);
+  const tips = [];
+  (function walk(n) { if (!n.children) tips.push(n); else n.children.forEach(walk); })(tree);
+  const byName = new Map(names.map((n, i) => [n, i]));
+  let brute = Infinity, bruteGains = 0;
+  for (let mask = 0; mask < 2 ** internals.length; mask++) {
+    const assign = new Map();
+    internals.forEach((n, i) => assign.set(n, (mask >> i) & 1));
+    tips.forEach(l => assign.set(l, states[byName.get(l.name)] > 0 ? 1 : 0));
+    let gains = 0, losses = 0;
+    (function walk(n) {
+      if (!n.children) return;
+      for (const c of n.children) {
+        const a = assign.get(n), b = assign.get(c);
+        if (a === 0 && b === 1) gains++;
+        else if (a === 1 && b === 0) losses++;
+        walk(c);
+      }
+    })(tree);
+    if (gains <= 1 && gains + losses < brute) { brute = gains + losses; bruteGains = gains; }
+  }
+
+  check('dollo.bruteforce', 'parsimony', 'Dollo cost equals the exhaustive minimum over all internal-state assignments',
+    'enumeration of 2^7 assignments written independently in this file', brute, I.dolloScore(tree, chars, names), 0);
+  check('dollo.gain-budget', 'parsimony', 'The exhaustive optimum uses exactly one gain',
+    'enumeration', 1, bruteGains, 0);
+  const session = PIF.createSession({ chars, names, kind: 'discrete', weights: { dollo: 1 }, initialTree: tree });
+  check('dollo.session', 'parsimony', 'The interactive session reports the same Dollo cost as the exhaustive minimum',
+    'enumeration', brute, session.score(), 0);
+  const row = session.siteReconstruction(1)[0];
+  checkTrue('dollo.reconstruction-gains', 'parsimony', 'The reconstruction spends at most one gain and its cost equals gains plus losses',
+    'counting gain and loss edges in the reconstructed states',
+    row.gains <= 1 && row.cost === row.gains + row.losses,
+    `gains=${row.gains} losses=${row.losses} cost=${row.cost}`);
+}
+
 // 22. Every program runs and returns a structured result
 {
   const dna = '>A\nACGTACGTACGT\n>C\nACGTACGTACGT\n>B\nACGTACGTACGA\n>D\nACGTACGTACGA';
