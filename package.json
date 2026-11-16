@@ -1,0 +1,19 @@
+{
+  "name": "phoenix-phylogenetics",
+  "version": "0.4.0",
+  "description": "A browser-based reimplementation of a subset of PHYLIP, with an explicit scientific status for every program.",
+  "license": "BSD-3-Clause",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "validate": "node validation/validate.js",
+    "compat": "node validation/generate-compatibility.js",
+    "browser-check": "node validation/browser-check.js",
+    "screenshots": "node validation/screenshots.js",
+    "benchmark": "node validation/benchmark.js",
+    "check": "npm test && npm run validate"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "suite": "Phoenix performance benchmark",
+  "generatedAt": "2026-11-16T11:31:21.468Z",
+  "environment": {
+    "runtime": "node v24.21.0",
+    "platform": "linux x64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.60GHz",
+    "cores": 2,
+    "note": "Containerised CI sandbox; absolute timings will differ on other hardware."
+  },
+  "results": [
+    {
+      "name": "DNADIST (JC)",
+      "detail": "10 taxa × 500 sites",
+      "ms": 4.7
+    },
+    {
+      "name": "NEIGHBOR (NJ)",
+      "detail": "10 taxa from the same matrix",
+      "ms": 5.1
+    },
+    {
+      "name": "DNAPARS",
+      "detail": "10 taxa × 500 sites",
+      "ms": 153.5
+    },
+    {
+      "name": "DNADIST (JC)",
+      "detail": "30 taxa × 1000 sites",
+      "ms": 20.2
+    },
+    {
+      "name": "NEIGHBOR (NJ)",
+      "detail": "30 taxa from the same matrix",
+      "ms": 24.2
+    },
+    {
+      "name": "DNAPARS",
+      "detail": "30 taxa × 1000 sites",
+      "ms": 7322.8
+    },
+    {
+      "name": "DNAML (HKY)",
+      "detail": "8 taxa × 300 sites",
+      "ms": 2498.7
+    },
+    {
+      "name": "DNAML (HKY)",
+      "detail": "16 taxa × 300 sites",
+      "ms": 15181.2
+    },
+    {
+      "name": "SEQBOOT + parsimony + CONSENSE",
+      "detail": "12 taxa × 400 sites, 50 replicates",
+      "ms": 9728.7
+    }
+  ]
+}

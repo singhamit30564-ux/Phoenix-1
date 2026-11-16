@@ -300,6 +300,19 @@
     return total;
   }
 
+  /**
+   * Dollo parsimony: a derived state may be gained at most once over the whole
+   * tree, and lost any number of times.
+   *
+   * The gain budget is a global resource, so it cannot be optimised child by
+   * child: two siblings must not each be allowed their own gain. The dynamic
+   * program therefore combines children sequentially, accumulating the number
+   * of gains already spent before spending any in the next child.
+   *
+   * f[g][s] is the minimum cost in the subtree given that exactly g gains are
+   * used below this node and the node itself is in state s (0 absent, 1
+   * present). Exact accounting keeps the parent's combination honest.
+   */
   function dolloScore(tree, chars, names) {
     const idx = new Map(names.map((n, i) => [n, i]));
     let total = 0;
@@ -308,37 +321,44 @@
       postorder(tree, node => {
         if (!node.children) {
           const v = col[idx.get(node.name)];
-          const f = [[INF, INF], [INF, INF]];
           const has0 = v[0] > 0;
           let has1 = false;
           for (let st = 1; st < v.length; st++) if (v[st] > 0) { has1 = true; break; }
-          if (has1 && !has0) { f[0][1] = 0; f[1][1] = 0; }
-          else if (has0 && !has1) { f[0][0] = 0; f[1][0] = 0; }
-          else { f[0][0] = 0; f[0][1] = 0; f[1][0] = 0; f[1][1] = 0; }
+          // A tip never spends a gain itself; a gain is counted on the edge
+          // above it, by whichever node is its parent.
+          const f = [[INF, INF], [INF, INF]];
+          if (has0) f[0][0] = 0;
+          if (has1) f[0][1] = 0;
+          if (!has0 && !has1) { f[0][0] = 0; f[0][1] = 0; }
           dp.set(node, f);
           return;
         }
-        const f = [[0, 0], [0, 0]];
-        for (let g = 0; g < 2; g++) {
-          for (let s = 0; s < 2; s++) {
-            let sum = 0;
-            for (const child of node.children) {
-              const cf = dp.get(child);
-              let best = INF;
+        const f = [[INF, INF], [INF, INF]];
+        for (let s = 0; s < 2; s++) {
+          let acc = [0, INF];          // cost after processing the children so far, by gains used
+          let feasible = true;
+          for (const child of node.children) {
+            const cf = dp.get(child);
+            const next = [INF, INF];
+            for (let used = 0; used < 2; used++) {
+              if (acc[used] >= INF) continue;
               for (let c = 0; c < 2; c++) {
                 const gain = s === 0 && c === 1 ? 1 : 0;
-                if (gain > g) continue;
                 const step = s === c ? 0 : 1;
-                for (let gc = 0; gc + gain <= g; gc++) {
+                for (let gc = 0; used + gain + gc < 2; gc++) {
                   if (cf[gc][c] >= INF) continue;
-                  const v = cf[gc][c] + step;
-                  if (v < best) best = v;
+                  const value = acc[used] + cf[gc][c] + step;
+                  const nu = used + gain + gc;
+                  if (value < next[nu]) next[nu] = value;
                 }
               }
-              sum += best;
             }
-            f[g][s] = sum >= INF ? INF : sum;
+            if (next[0] >= INF && next[1] >= INF) { feasible = false; break; }
+            acc = next;
           }
+          if (!feasible) continue;
+          f[0][s] = acc[0];
+          f[1][s] = acc[1];
         }
         dp.set(node, f);
       });
@@ -347,6 +367,18 @@
       total += isFinite(m) ? m : 0;
     }
     return total;
+  }
+
+  /** Number of gains and losses implied by a reconstruction (independent check). */
+  function dolloGainLoss(statesByName, edges) {
+    let gains = 0, losses = 0;
+    for (const [from, to] of edges) {
+      const a = statesByName.get(from) > 0 ? 1 : 0;
+      const b = statesByName.get(to) > 0 ? 1 : 0;
+      if (a === 0 && b === 1) gains++;
+      else if (a === 1 && b === 0) losses++;
+    }
+    return { gains, losses };
   }
 
   function fitchCost(n) {
@@ -642,7 +674,7 @@
 
   return {
     upgma, neighborJoining, leastSquaresFit, weightedSS, fitchScore, sankoffScore,
-    dolloScore, fitchCost, wagnerCost, caminSokalCost, nniImprove, stepwiseSearch,
+    dolloScore, dolloGainLoss, fitchCost, wagnerCost, caminSokalCost, nniImprove, stepwiseSearch,
     assignIds, findById, logLikelihood, optimizeBranchLengths, mlTree, clockTree,
     continuousTree, pDistances, pathLength, treeIndices, mrca
   };

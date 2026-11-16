@@ -225,42 +225,338 @@
     return copy;
   }
 
+  // ------------------------------------------------------- character states
+
+  /** Per character: the state index observed in each taxon, -1 when ambiguous. */
+  function characterStates(chars) {
+    return chars.map(col => col.map(v => {
+      let best = 0, bestCount = -1, count = 0;
+      for (let s = 0; s < v.length; s++) {
+        if (v[s] > 0) { count++; if (v[s] > bestCount) { bestCount = v[s]; best = s; } }
+      }
+      return count === 1 ? best : -1;
+    }));
+  }
+
   // ---------------------------------------------------------- DNAINVAR core
 
-  /** Per-site invariant support for the three quartet splits. */
+  /**
+   * Cavender's invariants for four taxa, as a rank condition.
+   *
+   * Write p(a,b,c,d) for the joint probability of the states seen at the four
+   * tips and reduce the four nucleotides to two states (R = A/G, Y = C/T).
+   * For the topology 12|34 the 4x4 pattern matrix M[(a,b)][(c,d)] factorises as
+   * U P V with U of size 4x2 and V of size 2x4, so M has rank at most two and
+   * every 3x3 minor of M vanishes identically, whatever the branch lengths.
+   * The other two topologies impose the same condition on their own pairing.
+   * Phoenix reports the size of the invariant residual for each topology; the
+   * topology with the smallest residual is the one the invariants support.
+   *
+   * Reference: Cavender & Felsenstein (1987) Mol. Biol. Evol. 4:625-640.
+   */
   function invariants(chars, names) {
-    if (names.length !== 4) throw new Error('DNAINVAR in Phoenix works on exactly four taxa.');
-    const counts = { '12|34': 0, '13|24': 0, '14|23': 0 };
-    const pairs = { '12|34': [[0, 1], [2, 3]], '13|24': [[0, 2], [1, 3]], '14|23': [[0, 3], [1, 2]] };
-    let informative = 0, uninformative = 0;
-    const patternTotals = new Map();
+    if (names.length !== 4) throw new Error('DNAINVAR works on exactly four taxa.');
+    const toRY = {};
+    ['A', 'G', 'R'].forEach(c => { toRY[c] = 0; });
+    ['C', 'T', 'Y', 'U'].forEach(c => { toRY[c] = 1; });
+
+    const counts = new Array(16).fill(0);
+    let used = 0, skipped = 0;
     for (const col of chars) {
       const code = col.map(v => {
-        let best = -1, bestCount = 0;
-        for (let s = 0; s < v.length; s++) if (v[s] > bestCount) { bestCount = v[s]; best = s; }
-        let alternatives = 0;
-        for (let s = 0; s < v.length; s++) if (v[s] > 0) alternatives++;
-        return alternatives === 1 ? best : -1;
+        let best = -1, bestCount = 0, distinct = 0;
+        for (let s = 0; s < v.length; s++) {
+          if (v[s] > 0) { distinct++; if (v[s] > bestCount) { bestCount = v[s]; best = s; } }
+        }
+        return distinct === 1 ? best : -1;
       });
-      if (code.some(c => c < 0)) { uninformative++; continue; }
-      const key = code.join('');
-      patternTotals.set(key, (patternTotals.get(key) || 0) + 1);
-      let supported = 0;
-      for (const [split, [[a, b], [c, d]]] of Object.entries(pairs)) {
-        if (code[a] === code[b] && code[c] === code[d] && code[a] !== code[c]) { counts[split]++; supported++; }
-      }
-      if (supported) informative++;
-      else uninformative++;
+      if (code.some(c => c < 0)) { skipped++; continue; }
+      // states 0..3 are A,C,G,T in the DNA alphabet; map to purine/pyrimidine
+      const ry = code.map(c => (c === 0 || c === 2 ? 0 : 1));
+      const index = (ry[0] << 3) | (ry[1] << 2) | (ry[2] << 1) | ry[3];
+      counts[index]++;
+      used++;
     }
-    const best = Object.entries(counts).sort((x, y) => y[1] - x[1])[0];
-    const total = Object.values(counts).reduce((a, b) => a + b, 0);
-    return {
-      counts, informative, uninformative, patterns: patternTotals,
-      bestSplit: best && best[1] > 0 ? best[0] : null,
-      bestCount: best ? best[1] : 0,
-      ratio: total ? best[1] / total : 0,
-      total
+
+    const pairs = {
+      '12|34': [[0, 1], [2, 3]],
+      '13|24': [[0, 2], [1, 3]],
+      '14|23': [[0, 3], [1, 2]]
     };
+
+    function matrixFor(pairing) {
+      const M = Array.from({ length: 4 }, () => new Array(4).fill(0));
+      for (let p = 0; p < 16; p++) {
+        const a = (p >> 3) & 1, b = (p >> 2) & 1, c = (p >> 1) & 1, d = p & 1;
+        const states = [a, b, c, d];
+        const row = states[pairing[0][0]] * 2 + states[pairing[0][1]];
+        const col = states[pairing[1][0]] * 2 + states[pairing[1][1]];
+        M[row][col] += counts[p];
+      }
+      return M;
+    }
+
+    function residual(M) {
+      let sumSquares = 0, maxAbs = 0;
+      for (let r = 0; r < 4; r++) {
+        const rows = [0, 1, 2, 3].filter(x => x !== r);
+        for (let c = 0; c < 4; c++) {
+          const cols = [0, 1, 2, 3].filter(x => x !== c);
+          const minor = determinant3(rows.map(i => cols.map(j => M[i][j])));
+          sumSquares += minor * minor;
+          maxAbs = Math.max(maxAbs, Math.abs(minor));
+        }
+      }
+      const scale = used > 0 ? used ** 1.5 : 1;
+      return { sumSquares, maxAbs, normalised: Math.sqrt(sumSquares) / scale };
+    }
+
+    const results = {};
+    for (const [split, pairing] of Object.entries(pairs)) {
+      const M = matrixFor(pairing);
+      results[split] = Object.assign({ matrix: M }, residual(M));
+    }
+    const ranked = Object.entries(results).sort((a, b) => a[1].sumSquares - b[1].sumSquares);
+    // If every topology has the same residual the data cannot discriminate
+    // between them, and reporting a "winner" would be arbitrary.
+    const spread = ranked[ranked.length - 1][1].sumSquares - ranked[0][1].sumSquares;
+    const unresolved = used === 0 || spread < 1e-9;
+    const bestSplit = unresolved ? null : ranked[0][0];
+
+    return {
+      counts,
+      used,
+      skipped,
+      results,
+      ranked: ranked.map(([split, r]) => ({ split, residual: r.normalised, sumSquares: r.sumSquares })),
+      unresolved,
+      bestSplit,
+      best: bestSplit ? results[bestSplit] : null
+    };
+  }
+
+  function determinant3(m) {
+    return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+      - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+      + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+  }
+
+  // --------------------------------------------------------------- FACTOR
+
+  /**
+   * Recode multistate characters into binary characters using a
+   * character-state tree, the operation performed by PHYLIP's FACTOR.
+   *
+   * Each character is given a tree over its states (a linear chain of the
+   * states present, unless the user supplies one). Every edge of that tree
+   * becomes one binary character, set to 1 for taxa whose state lies on the
+   * child side of the edge. A state tree with k states gives k-1 binary
+   * characters whose pattern identifies the original state, so the recoding is
+   * exactly reversible.
+   */
+  /**
+   * Validate a declared character-state tree.
+   *
+   * PHYLIP FACTOR rejects state trees that contain loops, that are not
+   * connected, or that omit a state that occurs in the data. The same checks
+   * are applied here before any recoding happens, and every error names the
+   * character it belongs to.
+   */
+  function validateStateTree(edges, observed, character, maxState) {
+    if (!Array.isArray(edges) || edges.length === 0) {
+      throw new Error(`Character ${character}: the character-state tree is empty.`);
+    }
+    const limit = maxState === undefined ? 9 : maxState;
+    const seen = new Set();
+    const nodes = new Set();
+    for (const edge of edges) {
+      if (!Array.isArray(edge) || edge.length !== 2) {
+        throw new Error(`Character ${character}: every state-tree entry must be a pair of states.`);
+      }
+      const [a, b] = edge;
+      for (const v of [a, b]) {
+        if (!Number.isInteger(v) || v < 0 || v > limit) {
+          throw new Error(`Character ${character}: "${v}" is not a valid state (expected an integer 0-${limit}).`);
+        }
+      }
+      if (a === b) {
+        throw new Error(`Character ${character}: state ${a} cannot be connected to itself.`);
+      }
+      const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+      if (seen.has(key)) {
+        throw new Error(`Character ${character}: the edge ${key} appears more than once.`);
+      }
+      seen.add(key);
+      nodes.add(a); nodes.add(b);
+    }
+
+    // Union-find: a cycle appears when an edge joins two states already joined.
+    const parent = new Map();
+    const find = x => {
+      let root = x;
+      while (parent.get(root) !== root) root = parent.get(root);
+      while (parent.get(x) !== root) { const next = parent.get(x); parent.set(x, root); x = next; }
+      return root;
+    };
+    for (const node of nodes) parent.set(node, node);
+    for (const [a, b] of edges) {
+      const ra = find(a), rb = find(b);
+      if (ra === rb) {
+        throw new Error(`Character ${character}: the state tree contains a loop (${a}-${b} closes a cycle).`);
+      }
+      parent.set(ra, rb);
+    }
+    const roots = new Set([...nodes].map(find));
+    if (roots.size > 1) {
+      throw new Error(`Character ${character}: the state tree is not connected; it falls into ${roots.size} separate pieces.`);
+    }
+    const missing = observed.filter(v => !nodes.has(v));
+    if (missing.length) {
+      throw new Error(`Character ${character}: state${missing.length > 1 ? 's' : ''} ${missing.join(', ')} occur in the data but are absent from the state tree.`);
+    }
+    return true;
+  }
+
+  /**
+   * Recode multistate characters into binary characters using a
+   * character-state tree, the operation performed by PHYLIP's FACTOR.
+   *
+   * Each edge of the state tree becomes one binary character, set to 1 for
+   * taxa whose state lies on the derived (child) side of that edge. A tree
+   * with k states has k-1 edges and each state has a unique pattern of edge
+   * sides, so the recoding is exactly reversible.
+   *
+   * Character handling follows FACTOR: when character-state trees are
+   * supplied, characters without one are omitted from the output; a character
+   * whose observed states are all identical contributes no binary characters
+   * because its state tree has a single node and therefore no edges.
+   */
+  function factorRecode(chars, names, opts = {}) {
+    const sites = characterStates(chars);
+    const stateTrees = opts.stateTrees || {};
+    const hasSpec = Object.keys(stateTrees).length > 0;
+    const maxState = opts.maxState === undefined ? 9 : opts.maxState;
+    const binary = [];
+    const mapping = [];
+    const omitted = [];
+    const constant = [];
+
+    for (let s = 0; s < sites.length; s++) {
+      const declared = stateTrees[s + 1];
+      if (hasSpec && !declared) {
+        omitted.push({ character: s + 1, reason: 'no character-state tree supplied' });
+        continue;
+      }
+      const observed = [...new Set(sites[s].filter(v => v >= 0))].sort((a, b) => a - b);
+      if (observed.length < 2) {
+        constant.push({ character: s + 1, state: observed.length ? observed[0] : null });
+        continue;
+      }
+      let edges;
+      if (declared) {
+        validateStateTree(declared, observed, s + 1, maxState);
+        edges = declared;
+      } else {
+        // Convenience for sequence input: a linear chain over the observed states.
+        edges = [];
+        for (let k = 1; k < observed.length; k++) edges.push([observed[k - 1], observed[k]]);
+      }
+
+      // Root the state tree at its lowest state so that "child side" is defined.
+      const adjacency = new Map();
+      for (const [u, v] of edges) {
+        if (!adjacency.has(u)) adjacency.set(u, []);
+        if (!adjacency.has(v)) adjacency.set(v, []);
+        adjacency.get(u).push(v);
+        adjacency.get(v).push(u);
+      }
+      const root = Math.min(...adjacency.keys());
+      const orientation = new Map();  // child -> parent
+      const stack = [root];
+      const seen = new Set([root]);
+      while (stack.length) {
+        const u = stack.pop();
+        for (const v of adjacency.get(u) || []) {
+          if (seen.has(v)) continue;
+          seen.add(v);
+          orientation.set(v, u);
+          stack.push(v);
+        }
+      }
+      const sideOf = (node, edge) => {
+        const [parentState, childState] = edge;
+        let cur = node;
+        const guard = new Set();
+        while (cur !== parentState && !guard.has(cur)) {
+          guard.add(cur);
+          if (cur === childState) return true;
+          const next = orientation.get(cur);
+          if (next === undefined) break;
+          cur = next;
+        }
+        return false;
+      };
+      const orientationEdges = edges.map(([u, v]) => (orientation.get(v) === u ? [u, v] : [v, u]));
+
+      const signature = new Map();
+      for (const state of observed) {
+        signature.set(orientationEdges.map(e => (sideOf(state, e) ? 1 : 0)).join(''), state);
+      }
+      if (signature.size !== observed.length) {
+        throw new Error(`Character ${s + 1}: the supplied state tree does not distinguish every state.`);
+      }
+
+      const produced = [];
+      const firstBinary = 1;
+      for (let e = 0; e < orientationEdges.length; e++) {
+        const column = sites[s].map((state, t) => {
+          if (state < 0) return { name: names[t], seq: '?' };
+          return { name: names[t], seq: sideOf(state, orientationEdges[e]) ? '1' : '0' };
+        });
+        binary.push(column);
+        produced.push({
+          binaryCharacter: binary.length,
+          parent: orientationEdges[e][0],
+          child: orientationEdges[e][1]
+        });
+      }
+      mapping.push({
+        character: s + 1,
+        states: observed,
+        edges: orientationEdges,
+        binaryCharacters: produced.map(p => p.binaryCharacter),
+        firstBinary,
+        detail: produced,
+        decode: [...signature.entries()]
+      });
+    }
+
+    // Round-trip check: every observed state must decode back to itself.
+    let mismatches = 0;
+    for (const entry of mapping) {
+      const cols = entry.binaryCharacters.map(bc => binary[bc - 1]);
+      const table = new Map(entry.decode);
+      for (let t = 0; t < names.length; t++) {
+        const state = sites[entry.character - 1][t];
+        if (state < 0) continue;
+        const sig = cols.map(col => col[t].seq).join('');
+        if (sig.includes('?')) continue;
+        if (table.get(sig) !== state) mismatches++;
+      }
+    }
+
+    return {
+      binary, mapping, omitted, constant, mismatches,
+      sites: sites.length,
+      hasSpec
+    };
+  }
+
+  /** Render a recoded data set as PHYLIP: one row per taxon, one column per binary character. */
+  function toPhylip(names, binaryColumns) {
+    const width = binaryColumns.length;
+    const rows = names.map((name, t) => name.slice(0, 10).padEnd(10) + binaryColumns.map(col => col[t].seq).join(''));
+    return [`${names.length} ${width}`, ...rows].join('\n');
   }
 
   // -------------------------------------------------------------- ordination
@@ -329,17 +625,6 @@
 
   // ------------------------------------------------ character compatibility
 
-  function characterStates(chars) {
-    // chars[site][taxon] -> state vector; return per-site map taxon->state code
-    return chars.map(col => col.map(v => {
-      let best = 0, bestCount = -1, count = 0;
-      for (let s = 0; s < v.length; s++) {
-        if (v[s] > 0) { count++; if (v[s] > bestCount) { bestCount = v[s]; best = s; } }
-      }
-      return count === 1 ? best : -1;
-    }));
-  }
-
   function compatible(siteA, siteB) {
     const sets = new Map();
     for (let t = 0; t < siteA.length; t++) {
@@ -391,6 +676,7 @@
 
   function formatLength(v) {
     if (!isFinite(v)) return '—';
+    if (Math.abs(v) < 1e-12) return '0';
     if (Math.abs(v) >= 0.001) return v.toFixed(4);
     return v.toExponential(2);
   }
@@ -403,7 +689,15 @@
     const padTop = 24, padBottom = 20, padLeft = 20, labelWidth = opts.labelWidth || 190;
     const height = Math.max(160, names.length * rowHeight + padTop + padBottom);
     const plotWidth = width - padLeft - labelWidth;
-    const cladogram = opts.style === 'cladogram';
+    // A tree whose branch lengths are all zero (for example a consensus tree)
+    // has no horizontal extent, so a phylogram would pile every node on the
+    // left edge. Fall back to the cladogram layout in that case.
+    const totalLength = (() => {
+      let sum = 0;
+      leaves(tree).forEach(l => { sum += Math.abs(l.length || 0); });
+      return sum;
+    })();
+    const cladogram = opts.style === 'cladogram' || totalLength < 1e-9;
     const ctx = buildLayout(tree, cladogram);
     const maxX = ctx.maxX || 1;
     const y = new Map();
@@ -426,6 +720,15 @@
       }
     }
     walk(tree);
+    const support = [];
+    (function walk(node) {
+      if (!node.children) return;
+      if (node.support !== undefined && node.support !== null) {
+        support.push(`<text x="${(node.__x + 4).toFixed(2)}" y="${(node.__y - 6).toFixed(2)}" font-family="DM Mono, monospace" font-size="9.5" fill="#7f9384">${Number(node.support).toFixed(1)}</text>`);
+      }
+      node.children.forEach(walk);
+    })(tree);
+
     const labels = names.map(n => {
       const leaf = leaves(tree).find(l => l.name === n);
       const yy = y.get(n);
@@ -436,6 +739,7 @@
     parts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Phylogenetic tree" style="width:100%;height:auto">`);
     parts.push(ticks);
     parts.push(lines.join(''));
+    parts.push(support.join(''));
     parts.push(labels);
     parts.push('</svg>');
     return parts.join('');
@@ -494,6 +798,15 @@
         walk(c);
       }
     })(tree);
+    const support = [];
+    (function walk(node) {
+      if (!node.children) return;
+      if (node.support !== undefined && node.support !== null) {
+        support.push(`<text x="${(node.__x + 4).toFixed(2)}" y="${(node.__y - 6).toFixed(2)}" font-family="DM Mono, monospace" font-size="9.5" fill="#7f9384">${Number(node.support).toFixed(1)}</text>`);
+      }
+      node.children.forEach(walk);
+    })(tree);
+
     const labels = names.map(n => {
       const leaf = leaves(tree).find(l => l.name === n);
       const [x, y] = P(leaf.__a, Math.min(1.06, leaf.__r + 0.04));
@@ -510,12 +823,20 @@
 
   /** Plain-text tree for the report pane. */
   function asciiTree(tree, opts = {}) {
-    const showLengths = opts.lengths !== false;
+    let anyLength = false;
+    (function walk(n) { if (n !== tree && n.length) anyLength = true; if (n.children) n.children.forEach(walk); })(tree);
+    const showLengths = (opts.lengths !== false) && anyLength;
     const lines = [];
     const label = n => {
-      const name = n.name || '';
+      let name = n.name || '';
+      if (!n.children && n.support !== undefined && n.support !== null) {
+        name += ` [${Number(n.support).toFixed(1)}]`;
+      } else if (n.children && n.support !== undefined && n.support !== null) {
+        name += ` [${Number(n.support).toFixed(1)}]`;
+      }
       if (!showLengths || n.length === undefined || n.length === null) return name;
-      return name ? `${name}:${formatLength(n.length)}` : `${formatLength(n.length)}`;
+      const length = formatLength(n.length);
+      return name ? `${name}:${length}` : length;
     };
     (function walk(node, prefix, isLast, isRoot) {
       const connector = isRoot ? '' : (isLast ? '└── ' : '├── ');
@@ -534,7 +855,7 @@
   return {
     bootstrapReplicates, jackknifeReplicates, consensus, orientedSplits,
     compareTrees, treeLength, reroot, resolveRandomly, radicalPair,
-    invariants, pcoa, jacobiEigen, compatible, cliques,
+    invariants, factorRecode, validateStateTree, toPhylip, characterStates, pcoa, jacobiEigen, compatible, cliques,
     drawRectangular, drawRadial, asciiTree, escapeXml, formatLength
   };
 });
