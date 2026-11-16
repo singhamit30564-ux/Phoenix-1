@@ -1,6 +1,19 @@
 /* phoenix-interactive.js — interactive parsimony sessions (DNAMOVE and MOVE).
-   A session holds a working tree, scores it, enumerates the nearest-neighbour
-   rearrangements and their score changes, and keeps an undo history. */
+ *
+ * A session holds a working tree, scores it under an explicitly selected
+ * criterion, enumerates nearest-neighbour rearrangements with their score
+ * changes, and keeps an undo history.
+ *
+ * Scoring is dispatched on the criterion, never on a fall-through:
+ *
+ *   DNA / protein  -> Fitch (unordered), as DNAMOVE and PROTPARS do
+ *   discrete data  -> the weighted Wagner / Dollo / Camin-Sokal objective,
+ *                     which is what MOVE (and MIX) use
+ *
+ * For discrete data the score and the ancestral reconstruction come from one
+ * dynamic program over (gains used, node state), so the states shown are the
+ * states that actually achieve the reported score.
+ */
 (function (root, factory) {
   const api = factory(
     typeof require === 'function' ? require('./phoenix-core.js') : root.PCore,
@@ -10,6 +23,10 @@
   else root.PInteractive = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (C, I) {
   'use strict';
+
+  const INF = 1e12;
+  const G = 2;            // gain budget dimension: 0 or 1 gain used
+  const MAX_STATES = 10;  // discrete states are 0..9
 
   function findById(node, id) {
     if (node.id === id) return node;
@@ -21,29 +38,212 @@
     return null;
   }
 
-  function scorable(tree, names) {
-    return C.leaves(tree).length === names.length && names.every(n => C.leaves(tree).some(l => l.name === n));
+  /**
+   * Resolve the requested weights into a criterion. Throws rather than
+   * silently substituting a different criterion when the configuration is
+   * ambiguous or empty.
+   */
+  function resolveCriterion(kind, rawWeights) {
+    if (kind === 'dna' || kind === 'protein') {
+      return { type: 'fitch' };
+    }
+    // Only a completely absent weight specification falls back to Wagner.
+    // An explicit { dollo: 1 } means Dollo only, never "Dollo plus Wagner".
+    const w = rawWeights || { wagner: 1, dollo: 0, caminSokal: 0 };
+    const weights = {
+      wagner: Number(w.wagner || 0),
+      dollo: Number(w.dollo || 0),
+      caminSokal: Number(w.caminSokal || 0)
+    };
+    for (const [name, value] of Object.entries(weights)) {
+      if (!Number.isFinite(value) || value < 0) {
+        throw new Error(`The ${name} weight must be a number greater than or equal to zero.`);
+      }
+    }
+    const total = weights.wagner + weights.dollo + weights.caminSokal;
+    if (!(total > 0)) {
+      throw new Error('At least one of the Wagner, Dollo or Camin–Sokal weights must be greater than zero.');
+    }
+    const active = Object.entries(weights).filter(([, v]) => v > 0).map(([k]) => k);
+    if (active.length === 1) return { type: active[0], weights };
+    return { type: 'mixed', weights };
   }
+
+  /**
+   * Cost of one state transition on one branch. Each active criterion
+   * contributes its own cost; Camin-Sokal makes downward moves impossible.
+   */
+  function edgeCost(from, to, weights) {
+    let cost = 0;
+    if (weights.wagner) cost += weights.wagner * Math.abs(from - to);
+    if (weights.caminSokal) {
+      if (to < from) return INF;          // irreversible: no state may revert
+      cost += weights.caminSokal * (to - from);
+    }
+    if (weights.dollo) {
+      const gain = from === 0 && to > 0 ? 1 : 0;
+      const loss = from > 0 && to === 0 ? 1 : 0;
+      cost += weights.dollo * (gain + loss);
+    }
+    return cost;
+  }
+
+  function isGain(from, to) {
+    return from === 0 && to > 0 ? 1 : 0;
+  }
+
+  /**
+   * One dynamic program over (gains used, state) that serves every criterion:
+   * with only Wagner active it reduces to Sankoff with ordered costs, with only
+   * Dollo active to the binary presence/absence Dollo criterion, and with a
+   * mixture to the weighted sum. Returns the cost and a MAP reconstruction.
+   */
+  function solveCharacter(tree, column, names, weights, nStates) {
+    const index = new Map(names.map((n, i) => [n, i]));
+    const size = G * nStates;
+    const dp = new Map();
+    const pick = new Map();
+
+    C.postorder(tree, node => {
+      const table = new Float64Array(size).fill(INF);
+      if (!node.children) {
+        const v = column[index.get(node.name)];
+        const allowed = [];
+        for (let s = 0; s < nStates; s++) if (v[s] > 0) allowed.push(s);
+        if (!allowed.length) {
+          table.fill(0);                       // unobserved: compatible with all states
+        } else {
+          for (let g = 0; g < G; g++) for (const s of allowed) table[g * nStates + s] = 0;
+        }
+        dp.set(node, table);
+        pick.set(node, null);
+        return;
+      }
+      const choices = new Array(size).fill(null);
+      for (let g = 0; g < G; g++) {
+        for (let s = 0; s < nStates; s++) {
+          let total = 0;
+          let feasible = true;
+          const chosen = [];
+          for (const child of node.children) {
+            const ct = dp.get(child);
+            let best = INF, bestChild = -1, bestBudget = 0;
+            for (let c = 0; c < nStates; c++) {
+              const gain = isGain(s, c);
+              if (gain > g) continue;
+              const step = edgeCost(s, c, weights);
+              if (step >= INF) continue;
+              for (let gc = 0; gc + gain <= g; gc++) {
+                const v = ct[gc * nStates + c];
+                if (v >= INF) continue;
+                const cand = v + step;
+                if (cand < best - 1e-12) { best = cand; bestChild = c; }
+              }
+            }
+            if (best >= INF) { feasible = false; break; }
+            total += best;
+            chosen.push({ state: bestChild, budget: bestBudget });
+          }
+          table[g * nStates + s] = feasible ? total : INF;
+          choices[g * nStates + s] = feasible ? chosen : null;
+        }
+      }
+      dp.set(node, table);
+      pick.set(node, choices);
+    });
+
+    const rootTable = dp.get(tree);
+    let bestCost = INF, bestG = 0, bestS = 0;
+    for (let g = 0; g < G; g++) {
+      for (let s = 0; s < nStates; s++) {
+        const v = rootTable[g * nStates + s];
+        if (v < bestCost - 1e-12) { bestCost = v; bestG = g; bestS = s; }
+      }
+    }
+    if (!isFinite(bestCost) || bestCost >= INF) {
+      return { cost: INF, states: new Map(), rootState: -1, changes: 0 };
+    }
+
+    const states = new Map();
+    let changes = 0;
+    (function trace(node, g, s) {
+      states.set(node, s);
+      if (!node.children) return;
+      const chosen = pick.get(node)[g * nStates + s];
+      if (!chosen) return;
+      node.children.forEach((child, k) => {
+        const { state: c, budget } = chosen[k];
+        if (c !== s) changes++;
+        trace(child, budget, c);
+      });
+    })(tree, bestG, bestS);
+
+    return { cost: bestCost, states, rootState: bestS, changes };
+  }
+
+  // ------------------------------------------------------------- Fitch path
+
+  function fitchSolve(tree, column, names) {
+    const index = new Map(names.map((n, i) => [n, i]));
+    const down = new Map();
+    const finalSet = new Map();
+    let steps = 0;
+    C.postorder(tree, node => {
+      if (!node.children) {
+        const v = column[index.get(node.name)];
+        let mask = 0;
+        for (let s = 0; s < v.length; s++) if (v[s] > 0) mask |= (1 << s);
+        down.set(node, mask);
+        return;
+      }
+      let m = down.get(node.children[0]);
+      for (let k = 1; k < node.children.length; k++) {
+        const other = down.get(node.children[k]);
+        const both = m & other;
+        if (both) m = both;
+        else { m |= other; steps++; }
+      }
+      down.set(node, m);
+    });
+    let changes = 0;
+    (function pass(node, parentMask) {
+      const own = down.get(node);
+      const chosen = parentMask !== undefined && (own & parentMask) ? (own & parentMask) : own;
+      finalSet.set(node, chosen);
+      if (node.children) {
+        node.children.forEach(child => {
+          const childMask = down.get(child);
+          if (!(childMask & chosen)) changes++;
+          pass(child, chosen);
+        });
+      }
+    })(tree, undefined);
+    return { steps, states: finalSet, changes };
+  }
+
+  function maskToStates(mask) {
+    const out = [];
+    for (let i = 0; i < 16; i++) if (mask & (1 << i)) out.push(i);
+    return out;
+  }
+
+  // ----------------------------------------------------------- the session
 
   function createSession(opts) {
     const { chars, names } = opts;
     const kind = opts.kind || 'dna';
-    const weights = opts.weights || { wagner: 1, dollo: 0, caminSokal: 0 };
+    const criterion = resolveCriterion(kind, opts.weights);
+    const nStates = MAX_STATES;
     const history = [];
     let tree = null;
 
-    function cost(t) {
-      if (kind === 'protein') return I.fitchScore(t, chars, names);
-      if (weights.dollo || weights.caminSokal) {
-        let total = 0;
-        const nStates = chars.length ? chars[0][0].length : 10;
-        if (weights.wagner) total += weights.wagner * I.sankoffScore(t, chars, names, I.wagnerCost(Math.min(nStates, 10)));
-        else total += 0;
-        if (weights.dollo) total += weights.dollo * I.dolloScore(t, chars, names);
-        if (weights.caminSokal) total += weights.caminSokal * I.sankoffScore(t, chars, names, I.caminSokalCost(Math.min(nStates, 10)));
-        return total;
+    function costOf(t) {
+      if (criterion.type === 'fitch') return I.fitchScore(t, chars, names);
+      let total = 0;
+      for (const col of chars) {
+        total += solveCharacter(t, col, names, criterion.weights, nStates).cost;
       }
-      return I.fitchScore(t, chars, names);
+      return total;
     }
 
     function reset(candidate) {
@@ -52,7 +252,7 @@
       } else if (names.length <= 2) {
         tree = { name: null, children: [{ name: names[0], length: 0 }, { name: names[1], length: 0 }] };
       } else {
-        tree = I.stepwiseSearch(names, t => -cost(t));
+        tree = I.stepwiseSearch(names, t => -costOf(t));
       }
       I.assignIds(tree);
       history.length = 0;
@@ -60,7 +260,20 @@
     }
 
     function currentScore() {
-      return cost(tree);
+      return costOf(tree);
+    }
+
+    function applyTo(source, move) {
+      const copy = C.cloneTree(source);
+      const node = findById(copy, move.nodeId);
+      if (!node || !node.children) return null;
+      const A = node.children[move.which];
+      if (!A || !A.children || A.children.length !== 2) return null;
+      const sibling = node.children[1 - move.which];
+      const moved = A.children[move.sub];
+      A.children[move.sub] = sibling;
+      node.children[1 - move.which] = moved;
+      return copy;
     }
 
     function moves() {
@@ -77,13 +290,12 @@
           for (let sub = 0; sub < 2; sub++) {
             const trial = applyTo(tree, { nodeId, which, sub });
             if (!trial) continue;
-            const s = cost(trial);
-            const partner = A.children[1 - sub];
+            const score = costOf(trial);
             out.push({
               id: `${nodeId}:${which}:${sub}`,
               nodeId, which, sub,
-              score: s,
-              delta: s - base,
+              score,
+              delta: score - base,
               label: `swap ${A.name || 'clade'} with ${node.children[1 - which].name || 'clade'}`
             });
           }
@@ -92,32 +304,14 @@
       return out;
     }
 
-    function applyTo(source, move) {
-      const copy = C.cloneTree(source);
-      const node = findById(copy, move.nodeId);
-      if (!node || !node.children) return null;
-      const A = node.children[move.which];
-      if (!A || !A.children || A.children.length !== 2) return null;
-      const sibling = node.children[1 - move.which];
-      const moved = A.children[move.sub];
-      A.children[move.sub] = sibling;
-      node.children[1 - move.which] = moved;
-      return copy;
-    }
-
     function apply(moveId) {
-      const move = parseMove(moveId);
-      const next = applyTo(tree, move);
+      const [nodeId, which, sub] = String(moveId).split(':').map(Number);
+      const next = applyTo(tree, { nodeId, which, sub });
       if (!next) return { ok: false, score: currentScore() };
       history.push(C.cloneTree(tree));
       tree = next;
       I.assignIds(tree);
       return { ok: true, score: currentScore() };
-    }
-
-    function parseMove(moveId) {
-      const [nodeId, which, sub] = String(moveId).split(':').map(Number);
-      return { nodeId, which, sub };
     }
 
     function undo() {
@@ -138,41 +332,47 @@
       return { applied, score: currentScore() };
     }
 
-    /** Most-parsimonious reconstruction of each character on the current tree. */
+    /**
+     * One most-parsimonious reconstruction per character on the current tree.
+     * Runs the same criterion as the score, so `cost` here sums to the score.
+     * Ties between equally parsimonious reconstructions are broken toward the
+     * lowest state index.
+     */
     function siteReconstruction(limit) {
-      const idx = new Map(names.map((n, i) => [n, i]));
-      const rows = [];
       const max = Math.min(chars.length, limit || 12);
+      const rows = [];
       for (let s = 0; s < max; s++) {
         const col = chars[s];
-        const down = new Map();
-        let steps = 0;
-        C.postorder(tree, node => {
-          if (!node.children) {
-            const v = col[idx.get(node.name)];
-            let mask = 0;
-            for (let k = 0; k < v.length; k++) if (v[k] > 0) mask |= (1 << k);
-            down.set(node, mask);
-            return;
-          }
-          let m = down.get(node.children[0]);
-          for (let k = 1; k < node.children.length; k++) {
-            const other = down.get(node.children[k]);
-            const both = m & other;
-            if (both) m = both;
-            else { m |= other; steps++; }
-          }
-          down.set(node, m);
-        });
-        rows.push({ site: s + 1, changes: steps, states: describe(down.get(tree)) });
+        if (criterion.type === 'fitch') {
+          const solved = fitchSolve(tree, col, names);
+          rows.push({
+            site: s + 1,
+            cost: solved.steps,
+            changes: solved.changes,
+            rootStates: maskToStates(solved.states.get(tree))
+          });
+        } else {
+          const solved = solveCharacter(tree, col, names, criterion.weights, nStates);
+          rows.push({
+            site: s + 1,
+            cost: Number(solved.cost.toFixed(3)),
+            changes: solved.changes,
+            rootStates: solved.rootState >= 0 ? [solved.rootState] : []
+          });
+        }
       }
       return rows;
     }
 
-    function describe(mask) {
-      const out = [];
-      for (let i = 0; i < 16; i++) if (mask & (1 << i)) out.push(i);
-      return out;
+    function criterionLabel() {
+      if (criterion.type === 'fitch') return 'Fitch (unordered)';
+      if (criterion.type === 'mixed') {
+        const w = criterion.weights;
+        return `weighted Wagner ${w.wagner} / Dollo ${w.dollo} / Camin–Sokal ${w.caminSokal}`;
+      }
+      return criterion.type === 'caminSokal'
+        ? 'Camin–Sokal (irreversible)'
+        : criterion.type.charAt(0).toUpperCase() + criterion.type.slice(1);
     }
 
     reset(opts.initialTree);
@@ -181,7 +381,8 @@
       get tree() { return tree; },
       names,
       kind,
-      weights,
+      criterion: criterion.type,
+      criterionLabel: criterionLabel(),
       score: currentScore,
       setTree(candidate) { return reset(candidate); },
       reset,
@@ -191,10 +392,9 @@
       greedy,
       siteReconstruction,
       canUndo: () => history.length > 0,
-      historyLength: () => history.length,
-      isScorable: () => scorable(tree, names)
+      historyLength: () => history.length
     };
   }
 
-  return { createSession };
+  return { createSession, resolveCriterion, edgeCost, solveCharacter, fitchSolve };
 });
