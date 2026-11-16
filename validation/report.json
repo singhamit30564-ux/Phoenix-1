@@ -1,10 +1,10 @@
 {
   "suite": "Phoenix scientific validation",
-  "version": "0.3.0",
-  "generatedAt": "2026-11-16T10:57:04.017Z",
+  "version": "0.4.0",
+  "generatedAt": "2026-11-16T11:35:20.654Z",
   "summary": {
-    "checks": 58,
-    "passed": 58,
+    "checks": 62,
+    "passed": 62,
     "failed": 0,
     "categories": {
       "distances": {
@@ -20,8 +20,8 @@
         "passed": 3
       },
       "parsimony": {
-        "total": 5,
-        "passed": 5
+        "total": 9,
+        "passed": 9
       },
       "tree building": {
         "total": 4,
@@ -651,6 +651,47 @@
       "actual": 0,
       "tolerance": 0,
       "pass": true
+    },
+    {
+      "id": "dollo.bruteforce",
+      "category": "parsimony",
+      "description": "Dollo cost equals the exhaustive minimum over all internal-state assignments",
+      "reference": "enumeration of 2^7 assignments written independently in this file",
+      "expected": 4,
+      "actual": 4,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "dollo.gain-budget",
+      "category": "parsimony",
+      "description": "The exhaustive optimum uses exactly one gain",
+      "reference": "enumeration",
+      "expected": 1,
+      "actual": 1,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "dollo.session",
+      "category": "parsimony",
+      "description": "The interactive session reports the same Dollo cost as the exhaustive minimum",
+      "reference": "enumeration",
+      "expected": 4,
+      "actual": 4,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "dollo.reconstruction-gains",
+      "category": "parsimony",
+      "description": "The reconstruction spends at most one gain and its cost equals gains plus losses",
+      "reference": "counting gain and loss edges in the reconstructed states",
+      "expected": true,
+      "actual": true,
+      "tolerance": null,
+      "pass": true,
+      "detail": "gains=0 losses=4 cost=4"
     },
     {
       "id": "programs.all-run",
