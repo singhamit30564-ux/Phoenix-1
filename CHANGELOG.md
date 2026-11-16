@@ -1,5 +1,60 @@
 # Changelog
 
+## Hackathon readiness (PR #3 follow-up)
+
+### Critical scientific fix: Dollo gain budget
+
+`solveCharacter()` in `phoenix-interactive.js` — and `dolloScore()` in
+`phoenix-infer.js`, which shared the same defect — optimised each child subtree
+independently, each with the full gain budget. Two siblings could therefore each
+spend a gain, so three illegal gains were priced as one.
+
+On an eight-taxon character where two separated derived clades make multiple
+gains look cheap, the old code reported 3; the true Dollo cost is 4 (one gain,
+three losses). Both implementations now combine child budgets sequentially, and
+`bestBudget` is stored with each child decision so the traceback reproduces the
+states that actually achieve the score.
+
+Regression tests compare against exhaustive enumeration of every internal-state
+assignment (written in the test file, not in the implementation), plus checks
+that the reconstruction spends at most one gain and that gains + losses equals
+the reported cost.
+
+A second, quieter bug was found while fixing this: the gain dimension was
+applied even when Dollo was not active, which would have capped Wagner and
+Camin–Sokal solutions at one upward move. Budget tracking now exists only when
+Dollo is on.
+
+### Product and engineering
+
+- **Web Worker execution.** Analyses run off the main thread; the interface
+  stays responsive during multi-second runs. Falls back to a main-thread run
+  when a worker cannot be created (for example over `file://`).
+- **Three guided demos** (`demos.js`): DNA distances and a tree, parsimony with
+  ancestral reconstruction, and bootstrap consensus on a simulated alignment
+  with a known generating tree.
+- **Result metadata strip**: program, algorithm, scientific status, input
+  summary, parameters, headline statistic and timestamp on every result.
+- **Exports**: Newick, CSV (matrices), JSON (full reproducible record) and text.
+- **Support values** are now drawn on consensus trees, in both the SVG and the
+  text view.
+- Trees with no branch lengths (consensus trees) render as cladograms instead of
+  collapsing onto the left edge.
+- Progress/elapsed-time indicator, accessible focus styles, skip link, and
+  responsive fixes for 390 px and 820 px viewports.
+
+### Validation and evidence
+
+- `validation/validate.js`: 58 → 62 checks, adding an exhaustive Dollo
+  cross-check.
+- `tests/`: 80 → 88 tests.
+- New `validation/browser-check.js`: 12 headless checks covering all 35
+  programs, the three demos, exports, error handling and three viewports.
+- New `validation/benchmark.js` and `validation/screenshots.js`.
+- New `docs/DEMO.md` (five-minute script) and `docs/PITCH.md` (pitch and judge
+  Q&A).
+
+
 ## Review remediation (PR #3 follow-up)
 
 Fixes four defects found in the corrections themselves.
