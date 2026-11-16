@@ -317,7 +317,11 @@
       results[split] = Object.assign({ matrix: M }, residual(M));
     }
     const ranked = Object.entries(results).sort((a, b) => a[1].sumSquares - b[1].sumSquares);
-    const bestSplit = used > 0 ? ranked[0][0] : null;
+    // If every topology has the same residual the data cannot discriminate
+    // between them, and reporting a "winner" would be arbitrary.
+    const spread = ranked[ranked.length - 1][1].sumSquares - ranked[0][1].sumSquares;
+    const unresolved = used === 0 || spread < 1e-9;
+    const bestSplit = unresolved ? null : ranked[0][0];
 
     return {
       counts,
@@ -325,6 +329,7 @@
       skipped,
       results,
       ranked: ranked.map(([split, r]) => ({ split, residual: r.normalised, sumSquares: r.sumSquares })),
+      unresolved,
       bestSplit,
       best: bestSplit ? results[bestSplit] : null
     };
@@ -349,30 +354,115 @@
    * characters whose pattern identifies the original state, so the recoding is
    * exactly reversible.
    */
+  /**
+   * Validate a declared character-state tree.
+   *
+   * PHYLIP FACTOR rejects state trees that contain loops, that are not
+   * connected, or that omit a state that occurs in the data. The same checks
+   * are applied here before any recoding happens, and every error names the
+   * character it belongs to.
+   */
+  function validateStateTree(edges, observed, character, maxState) {
+    if (!Array.isArray(edges) || edges.length === 0) {
+      throw new Error(`Character ${character}: the character-state tree is empty.`);
+    }
+    const limit = maxState === undefined ? 9 : maxState;
+    const seen = new Set();
+    const nodes = new Set();
+    for (const edge of edges) {
+      if (!Array.isArray(edge) || edge.length !== 2) {
+        throw new Error(`Character ${character}: every state-tree entry must be a pair of states.`);
+      }
+      const [a, b] = edge;
+      for (const v of [a, b]) {
+        if (!Number.isInteger(v) || v < 0 || v > limit) {
+          throw new Error(`Character ${character}: "${v}" is not a valid state (expected an integer 0-${limit}).`);
+        }
+      }
+      if (a === b) {
+        throw new Error(`Character ${character}: state ${a} cannot be connected to itself.`);
+      }
+      const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+      if (seen.has(key)) {
+        throw new Error(`Character ${character}: the edge ${key} appears more than once.`);
+      }
+      seen.add(key);
+      nodes.add(a); nodes.add(b);
+    }
+
+    // Union-find: a cycle appears when an edge joins two states already joined.
+    const parent = new Map();
+    const find = x => {
+      let root = x;
+      while (parent.get(root) !== root) root = parent.get(root);
+      while (parent.get(x) !== root) { const next = parent.get(x); parent.set(x, root); x = next; }
+      return root;
+    };
+    for (const node of nodes) parent.set(node, node);
+    for (const [a, b] of edges) {
+      const ra = find(a), rb = find(b);
+      if (ra === rb) {
+        throw new Error(`Character ${character}: the state tree contains a loop (${a}-${b} closes a cycle).`);
+      }
+      parent.set(ra, rb);
+    }
+    const roots = new Set([...nodes].map(find));
+    if (roots.size > 1) {
+      throw new Error(`Character ${character}: the state tree is not connected; it falls into ${roots.size} separate pieces.`);
+    }
+    const missing = observed.filter(v => !nodes.has(v));
+    if (missing.length) {
+      throw new Error(`Character ${character}: state${missing.length > 1 ? 's' : ''} ${missing.join(', ')} occur in the data but are absent from the state tree.`);
+    }
+    return true;
+  }
+
+  /**
+   * Recode multistate characters into binary characters using a
+   * character-state tree, the operation performed by PHYLIP's FACTOR.
+   *
+   * Each edge of the state tree becomes one binary character, set to 1 for
+   * taxa whose state lies on the derived (child) side of that edge. A tree
+   * with k states has k-1 edges and each state has a unique pattern of edge
+   * sides, so the recoding is exactly reversible.
+   *
+   * Character handling follows FACTOR: when character-state trees are
+   * supplied, characters without one are omitted from the output; a character
+   * whose observed states are all identical contributes no binary characters
+   * because its state tree has a single node and therefore no edges.
+   */
   function factorRecode(chars, names, opts = {}) {
     const sites = characterStates(chars);
     const stateTrees = opts.stateTrees || {};
+    const hasSpec = Object.keys(stateTrees).length > 0;
+    const maxState = opts.maxState === undefined ? 9 : opts.maxState;
     const binary = [];
     const mapping = [];
-    const deleted = [];
+    const omitted = [];
+    const constant = [];
 
     for (let s = 0; s < sites.length; s++) {
-      const observed = [...new Set(sites[s].filter(v => v >= 0))].sort((a, b) => a - b);
-      if (observed.length < 2) { deleted.push({ character: s + 1, reason: 'constant' }); continue; }
       const declared = stateTrees[s + 1];
+      if (hasSpec && !declared) {
+        omitted.push({ character: s + 1, reason: 'no character-state tree supplied' });
+        continue;
+      }
+      const observed = [...new Set(sites[s].filter(v => v >= 0))].sort((a, b) => a - b);
+      if (observed.length < 2) {
+        constant.push({ character: s + 1, state: observed.length ? observed[0] : null });
+        continue;
+      }
       let edges;
-      if (declared && declared.length) {
+      if (declared) {
+        validateStateTree(declared, observed, s + 1, maxState);
         edges = declared;
-        const needed = new Set(observed);
-        const covered = new Set();
-        edges.forEach(e => { covered.add(e[0]); covered.add(e[1]); });
-        const missing = [...needed].filter(v => !covered.has(v));
-        if (missing.length) throw new Error(`Character ${s + 1}: states ${missing.join(', ')} are absent from the supplied state tree.`);
       } else {
+        // Convenience for sequence input: a linear chain over the observed states.
         edges = [];
         for (let k = 1; k < observed.length; k++) edges.push([observed[k - 1], observed[k]]);
       }
-      // Root the state tree at its lowest state so "child side" is well defined.
+
+      // Root the state tree at its lowest state so that "child side" is defined.
       const adjacency = new Map();
       for (const [u, v] of edges) {
         if (!adjacency.has(u)) adjacency.set(u, []);
@@ -393,22 +483,13 @@
           stack.push(v);
         }
       }
-      const children = (node, from) => {
-        const out = [];
-        for (const v of adjacency.get(node) || []) {
-          if (v === from) continue;
-          out.push(v);
-        }
-        return out;
-      };
       const sideOf = (node, edge) => {
-        // true when `node` sits on the child side of (parent, child) edge
-        const [parent, child] = edge;
+        const [parentState, childState] = edge;
         let cur = node;
         const guard = new Set();
-        while (cur !== parent && !guard.has(cur)) {
+        while (cur !== parentState && !guard.has(cur)) {
           guard.add(cur);
-          if (cur === child) return true;
+          if (cur === childState) return true;
           const next = orientation.get(cur);
           if (next === undefined) break;
           cur = next;
@@ -426,20 +507,25 @@
       }
 
       const produced = [];
+      const firstBinary = 1;
       for (let e = 0; e < orientationEdges.length; e++) {
-        const col = sites[s].map((state, t) => {
+        const column = sites[s].map((state, t) => {
           if (state < 0) return { name: names[t], seq: '?' };
           return { name: names[t], seq: sideOf(state, orientationEdges[e]) ? '1' : '0' };
         });
-        const pos = binary.length;
-        binary.push(col);
-        produced.push({ binaryCharacter: pos + 1, parent: orientationEdges[e][0], child: orientationEdges[e][1] });
+        binary.push(column);
+        produced.push({
+          binaryCharacter: binary.length,
+          parent: orientationEdges[e][0],
+          child: orientationEdges[e][1]
+        });
       }
       mapping.push({
         character: s + 1,
         states: observed,
         edges: orientationEdges,
         binaryCharacters: produced.map(p => p.binaryCharacter),
+        firstBinary,
         detail: produced,
         decode: [...signature.entries()]
       });
@@ -447,13 +533,11 @@
 
     // Round-trip check: every observed state must decode back to itself.
     let mismatches = 0;
-    for (let s = 0; s < sites.length; s++) {
-      const entry = mapping.find(m => m.character === s + 1);
-      if (!entry) continue;
+    for (const entry of mapping) {
       const cols = entry.binaryCharacters.map(bc => binary[bc - 1]);
       const table = new Map(entry.decode);
       for (let t = 0; t < names.length; t++) {
-        const state = sites[s][t];
+        const state = sites[entry.character - 1][t];
         if (state < 0) continue;
         const sig = cols.map(col => col[t].seq).join('');
         if (sig.includes('?')) continue;
@@ -461,7 +545,11 @@
       }
     }
 
-    return { binary, mapping, deleted, mismatches, sites: sites.length };
+    return {
+      binary, mapping, omitted, constant, mismatches,
+      sites: sites.length,
+      hasSpec
+    };
   }
 
   /** Render a recoded data set as PHYLIP: one row per taxon, one column per binary character. */
@@ -731,7 +819,7 @@
   return {
     bootstrapReplicates, jackknifeReplicates, consensus, orientedSplits,
     compareTrees, treeLength, reroot, resolveRandomly, radicalPair,
-    invariants, factorRecode, toPhylip, characterStates, pcoa, jacobiEigen, compatible, cliques,
+    invariants, factorRecode, validateStateTree, toPhylip, characterStates, pcoa, jacobiEigen, compatible, cliques,
     drawRectangular, drawRadial, asciiTree, escapeXml, formatLength
   };
 });
