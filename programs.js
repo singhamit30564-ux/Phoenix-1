@@ -68,6 +68,7 @@ E 0.50 0.10 0.20 0.20`,
   let current = null;
   let last = null;
   let activeInput = null;
+  let lastContext = null;      // program, options, input and trees used for the last result
 
   // ------------------------------------------------------------- catalogue
 
@@ -211,37 +212,161 @@ E 0.50 0.10 0.20 0.20`,
 
   // ------------------------------------------------------------------- run
 
+  // --------------------------------------------------------------- workers
+  //
+  // Long analyses run in a Web Worker so the page stays responsive. The engine
+  // modules are UMD scripts, so the worker loads the same code. A worker cannot
+  // be created from a file:// page, and interactive programs hold functions
+  // that cannot be cloned, so both cases fall back to a main-thread run.
+
+  let worker = null;
+  let workerBroken = false;
+  let requestId = 0;
+  const pending = new Map();
+
+  function getWorker() {
+    if (workerBroken || typeof Worker === 'undefined') return null;
+    if (worker) return worker;
+    try {
+      worker = new Worker('phoenix-worker.js');
+      worker.onmessage = event => {
+        const { id, ok, result, error } = event.data;
+        const entry = pending.get(id);
+        if (!entry) return;
+        pending.delete(id);
+        if (ok) entry.resolve(result);
+        else entry.reject(new Error(error));
+      };
+      worker.onerror = event => {
+        workerBroken = true;
+        for (const [, entry] of pending) entry.reject(new Error(event.message || 'Worker failed'));
+        pending.clear();
+      };
+      return worker;
+    } catch (_) {
+      workerBroken = true;
+      return null;
+    }
+  }
+
+  function runInWorker(payload) {
+    const w = getWorker();
+    if (!w) return Promise.reject(new Error('worker unavailable'));
+    const id = ++requestId;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      w.postMessage(Object.assign({ id }, payload));
+    });
+  }
+
+  // ------------------------------------------------------------------- run
+
   function run() {
     if (!current) return;
     const button = $('runProgram');
+    const original = button.innerHTML;
     button.disabled = true;
+    button.innerHTML = 'Running…';
+    $('runStatus').hidden = false;
     $('programError').textContent = '';
     const started = performance.now();
-    requestAnimationFrame(() => {
-      try {
-        if (activeInput !== null && $('programInput')) store[activeInput] = $('programInput').value;
-        const opts = readOptions();
-        const ctx = { text: activeInput !== null ? $('programInput').value : '', opts };
-        if (current.needsTrees > 0) {
-          const raw = $('programTree').value;
-          store[current.needsTrees > 1 ? 'trees' : 'tree'] = raw;
-          ctx.trees = raw.split(/;\s*(?:\r?\n|$)/).map(s => s.trim()).filter(Boolean).map(s => C.parseNewick(s + ';'));
-          if (ctx.trees.length < (current.needsTrees || 1)) {
-            throw new Error(`Supply at least ${current.needsTrees} tree${current.needsTrees > 1 ? 's' : ''}, separated by semicolons.`);
-          }
+    const ticker = window.setInterval(() => {
+      $('runStatus').textContent = `Running ${current.id}… ${((performance.now() - started) / 1000).toFixed(1)}s`;
+    }, 100);
+
+    const finish = () => {
+      window.clearInterval(ticker);
+      button.disabled = false;
+      button.innerHTML = original;
+    };
+
+    // Gather the request.
+    let ctx;
+    try {
+      if (activeInput !== null && $('programInput')) store[activeInput] = $('programInput').value;
+      const opts = readOptions();
+      ctx = { text: activeInput !== null ? $('programInput').value : '', opts };
+      if (current.needsTrees > 0) {
+        const raw = $('programTree').value;
+        store[current.needsTrees > 1 ? 'trees' : 'tree'] = raw;
+        ctx.trees = raw.split(/;\s*(?:\r?\n|$)/).map(s => s.trim()).filter(Boolean).map(s => C.parseNewick(s + ';'));
+        if (ctx.trees.length < (current.needsTrees || 1)) {
+          throw new Error(`Supply at least ${current.needsTrees} tree${current.needsTrees > 1 ? 's' : ''}, separated by semicolons.`);
         }
-        const result = current.run(ctx);
-        result.elapsed = Math.round(performance.now() - started);
-        last = result;
-        render(result);
-      } catch (error) {
-        last = null;
-        clearOutput('The run stopped before producing a result.');
-        $('programError').textContent = error.message;
-      } finally {
-        button.disabled = false;
       }
+    } catch (error) {
+      finish();
+      $('runStatus').hidden = true;
+      clearOutput('The run stopped before producing a result.');
+      $('programError').textContent = error.message;
+      return;
+    }
+
+    const accept = result => {
+      result.elapsed = Math.round(performance.now() - started);
+      last = result;
+      lastContext = {
+        program: current.id,
+        title: current.title,
+        opts: ctx.opts,
+        input: ctx.text,
+        trees: ctx.trees ? ctx.trees.map(t => C.toNewick(t)) : null,
+        inputSummary: summariseInput(ctx.text, ctx.trees),
+        seed: ctx.opts.seed
+      };
+      render(result);
+      $('runStatus').textContent = `${current.id} finished in ${result.elapsed} ms`;
+      finish();
+      window.setTimeout(() => { $('runStatus').hidden = true; }, 2500);
+    };
+
+    const fail = error => {
+      last = null;
+      lastContext = null;
+      clearOutput('The run stopped before producing a result.');
+      $('programError').textContent = error.message;
+      $('runStatus').textContent = `${current.id} stopped: ${error.message}`;
+      finish();
+      window.setTimeout(() => { $('runStatus').hidden = true; }, 4000);
+    };
+
+    const runHere = () => {
+      // Yield first so the busy state is painted before a long synchronous run.
+      window.setTimeout(() => {
+        try {
+          accept(current.run(ctx));
+        } catch (error) {
+          fail(error);
+        }
+      }, 20);
+    };
+
+    if (current.interactive) { runHere(); return; }
+
+    runInWorker({
+      programId: current.id,
+      text: ctx.text,
+      opts: ctx.opts,
+      trees: ctx.trees ? ctx.trees.map(t => C.toNewick(t)) : null
+    }).then(accept, () => {
+      // Worker unavailable (for example when opened over file://) or failed.
+      runHere();
     });
+  }
+
+  /** Short description of the input, for the result metadata strip. */
+  function summariseInput(text, trees) {
+    if (trees && trees.length) return `${trees.length} tree${trees.length > 1 ? 's' : ''}`;
+    if (!text) return '—';
+    const body = String(text).trim();
+    if (body[0] === '>') {
+      const taxa = (body.match(/^>/gm) || []).length;
+      const first = body.split(/\r?\n/).find(l => l && l[0] !== '>') || '';
+      return `${taxa} taxa × ${first.replace(/\s+/g, '').length} sites`;
+    }
+    const head = body.split(/\r?\n/)[0].trim().split(/\s+/);
+    if (head.length >= 2 && /^\d+$/.test(head[0])) return `${head[0]} taxa × ${head[1]} characters`;
+    return `${body.split(/\r?\n/).length} rows`;
   }
 
   function clearOutput(message) {
@@ -263,12 +388,16 @@ E 0.50 0.10 0.20 0.20`,
       activeSession = result.session;
       view.classList.remove('is-tree');
       drawInteractive(result);
+      renderMeta(result);
       $('downloadNewick').disabled = false;
+      $('downloadCsv').disabled = true;
+      $('downloadJson').disabled = false;
       $('programNotes').innerHTML = (result.notes || []).map(n => `<li>${escapeHtml(n)}</li>`).join('');
       $('programError').textContent = '';
       return;
     }
     activeSession = null;
+    if (result.kind === 'demo') { renderDemo(result); return; }
     if (result.kind === 'tree') {
       view.innerHTML = result.svg;
       view.classList.add('is-tree');
@@ -284,7 +413,66 @@ E 0.50 0.10 0.20 0.20`,
       + `<div><span>RUNTIME</span><strong>${result.elapsed} ms</strong></div>`;
     $('programNotes').innerHTML = (result.notes || []).map(n => `<li>${escapeHtml(n)}</li>`).join('');
     $('downloadNewick').disabled = result.kind !== 'tree';
-    $('downloadText').disabled = !($('programText').textContent || '').trim();
+    $('downloadCsv').disabled = result.kind !== 'matrix';
+    $('downloadJson').disabled = false;
+    renderMeta(result);
+    $('programError').textContent = '';
+  }
+
+  /** Metadata strip: what ran, on what, with which parameters, and when. */
+  function renderMeta(result) {
+    const host = $('resultMeta');
+    if (!host) return;
+    const ctx = lastContext || {};
+    const program = ctx.program || (current ? current.id : '—');
+    const meta = P.statusOf(program);
+    const params = ctx.opts
+      ? Object.entries(ctx.opts).filter(([, v]) => v !== '' && v !== undefined)
+        .map(([k, v]) => `${k}=${v}`).join(' · ')
+      : '';
+    const stats = (result.stats || []).map(s => `${s.label}: ${s.value}`).join(' · ');
+    const rows = [
+      ['PROGRAM', program],
+      ['ALGORITHM', ctx.title || (current ? current.title : '')],
+      ['STATUS', meta ? meta.status : '—'],
+      ['INPUT', ctx.inputSummary || '—'],
+      ['PARAMETERS', params || 'none'],
+      ['RESULT', stats || '—'],
+      ['COMPLETED', new Date().toLocaleString()]
+    ];
+    host.innerHTML = rows.map(([k, v]) =>
+      `<div><span>${escapeHtml(k)}</span><b>${escapeHtml(String(v))}</b></div>`).join('')
+      + (ctx.seed !== undefined ? `<div><span>SEED</span><b>${escapeHtml(String(ctx.seed))}</b></div>` : '');
+    host.hidden = false;
+  }
+
+  function renderDemo(result) {
+    activeSession = null;
+    const view = $('programView');
+    view.hidden = false;
+    view.classList.add('is-tree');
+    view.innerHTML = result.tree ? S.drawRectangular(result.tree, { style: 'phenogram', width: 720, rowHeight: 26 })
+      : '<div class="output-empty"><span>✳</span>This demo produced no tree.</div>';
+    $('programText').textContent = result.text || '';
+    $('programStats').innerHTML = (result.steps || []).map(st =>
+      `<div><span>${escapeHtml(st.programId)}</span><strong>${escapeHtml(
+        (st.result.stats || []).slice(0, 2).map(s => `${s.label} ${s.value}`).join(' · ') || 'done')}</strong></div>`).join('');
+    const stepNotes = (result.steps || []).map(st =>
+      `<li><b>${escapeHtml(st.title)}</b> — ${escapeHtml(st.caption)}</li>`).join('');
+    $('programNotes').innerHTML = stepNotes
+      + (result.notes || []).map(n => `<li>${escapeHtml(n)}</li>`).join('');
+    $('programTitle').textContent = result.title;
+    $('programName').textContent = 'DEMO ' + (result.demoId || '').toUpperCase();
+    $('programSummary').textContent = result.blurb;
+    $('resultMeta').innerHTML = `
+      <div><span>DEMO</span><b>${escapeHtml(result.title)}</b></div>
+      <div><span>DATA</span><b>${escapeHtml(result.dataset || '—')}</b></div>
+      <div><span>STEPS</span><b>${escapeHtml((result.steps || []).map(s => s.programId).join(' → '))}</b></div>
+      <div><span>COMPLETED</span><b>${escapeHtml(new Date().toLocaleString())}</b></div>`;
+    $('resultMeta').hidden = false;
+    $('downloadNewick').disabled = !result.tree;
+    $('downloadCsv').disabled = true;
+    $('downloadJson').disabled = false;
     $('programError').textContent = '';
   }
 
@@ -360,9 +548,41 @@ E 0.50 0.10 0.20 0.20`,
   }
 
   $('downloadNewick').addEventListener('click', () => {
-    const tree = activeSession ? activeSession.tree : (last && last.kind === 'tree' ? last.tree : null);
+    const tree = activeSession ? activeSession.tree
+      : last && last.tree ? last.tree
+        : last && last.kind === 'tree' ? last.tree : null;
     if (!tree) return;
-    download(current.id.toLowerCase() + '.nwk', C.toNewick(tree) + '\n');
+    download(`${current.id.toLowerCase()}.nwk`, C.toNewick(tree) + '\n');
+  });
+
+  $('downloadCsv').addEventListener('click', () => {
+    if (!last || last.kind !== 'matrix') return;
+    const rows = [['taxon', ...last.names]];
+    last.names.forEach((name, i) => rows.push([name, ...last.matrix[i].map(v => v.toFixed(6))]));
+    const csv = rows.map(r => r.map(cell => /[",\n]/.test(String(cell)) ? `"${String(cell).replace(/"/g, '""')}"` : cell).join(',')).join('\n');
+    download(`${current.id.toLowerCase()}.csv`, csv + '\n', 'text/csv');
+  });
+
+  $('downloadJson').addEventListener('click', () => {
+    if (!last) return;
+    const ctx = lastContext || {};
+    const payload = {
+      program: ctx.program || null,
+      algorithm: ctx.title || null,
+      status: ctx.program ? (P.statusOf(ctx.program) || {}).status || null : null,
+      parameters: ctx.opts || null,
+      inputSummary: ctx.inputSummary || null,
+      input: ctx.input || null,
+      trees: ctx.trees || null,
+      completedAt: new Date().toISOString(),
+      elapsedMs: last.elapsed === undefined ? null : last.elapsed,
+      stats: last.stats || [],
+      notes: last.notes || [],
+      tree: last.tree ? C.toNewick(last.tree) : null,
+      matrix: last.kind === 'matrix' ? { names: last.names, values: last.matrix } : null,
+      text: last.kind === 'tree' ? last.ascii : (last.text || null)
+    };
+    download(`${(ctx.program || 'phoenix').toLowerCase()}.json`, JSON.stringify(payload, null, 2) + '\n', 'application/json');
   });
 
   $('downloadText').addEventListener('click', () => {
@@ -385,4 +605,25 @@ E 0.50 0.10 0.20 0.20`,
   ensureStatusNodes();
   renderCatalogue('');
   select('DNAPARS');
+
+  window.PhoenixUI = {
+    showResult(result, source) {
+      last = result;
+      lastContext = result.kind === 'demo'
+        ? { program: 'DEMO', title: result.title, opts: {}, input: result.data, inputSummary: result.dataset }
+        : lastContext;
+      if (source === 'demo') {
+        $('programError').textContent = '';
+        render(result);
+      } else {
+        render(result);
+      }
+    },
+    showError(message) {
+      $('programError').textContent = message;
+    },
+    selectProgram(id) {
+      select(id);
+    }
+  };
 })();
