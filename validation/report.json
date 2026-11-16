@@ -1,10 +1,10 @@
 {
   "suite": "Phoenix scientific validation",
   "version": "0.3.0",
-  "generatedAt": "2026-11-11T16:59:29.335Z",
+  "generatedAt": "2026-11-16T10:57:04.017Z",
   "summary": {
-    "checks": 36,
-    "passed": 36,
+    "checks": 58,
+    "passed": 58,
     "failed": 0,
     "categories": {
       "distances": {
@@ -28,16 +28,16 @@
         "passed": 4
       },
       "continuous ml": {
-        "total": 4,
-        "passed": 4
+        "total": 6,
+        "passed": 6
       },
       "recoding": {
-        "total": 2,
-        "passed": 2
+        "total": 7,
+        "passed": 7
       },
       "invariants": {
-        "total": 2,
-        "passed": 2
+        "total": 4,
+        "passed": 4
       },
       "support": {
         "total": 4,
@@ -56,6 +56,14 @@
         "passed": 1
       },
       "interactive": {
+        "total": 1,
+        "passed": 1
+      },
+      "move scoring": {
+        "total": 12,
+        "passed": 12
+      },
+      "documentation": {
         "total": 1,
         "passed": 1
       },
@@ -423,6 +431,226 @@
       "tolerance": null,
       "pass": true,
       "detail": "start=1"
+    },
+    {
+      "id": "move.wagner-vs-fitch",
+      "category": "move scoring",
+      "description": "The two criteria disagree on this data set, so the default can be identified",
+      "reference": "hand computation: ordered costs 2, unordered costs 1",
+      "expected": 2,
+      "actual": 2,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "move.fitch-differs",
+      "category": "move scoring",
+      "description": "Fitch scores the same data as 1",
+      "reference": "hand computation",
+      "expected": 1,
+      "actual": 1,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "move.default-wagner",
+      "category": "move scoring",
+      "description": "MOVE scores with Wagner, not Fitch",
+      "reference": "comparison with sankoffScore and fitchScore",
+      "expected": 2,
+      "actual": 2,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "move.wagner",
+      "category": "move scoring",
+      "description": "Wagner-only weights reproduce Sankoff on ordered costs",
+      "reference": "phoenix-infer sankoffScore with wagnerCost",
+      "expected": 4,
+      "actual": 4,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "move.dollo",
+      "category": "move scoring",
+      "description": "Dollo-only weights reproduce the Dollo criterion",
+      "reference": "phoenix-infer dolloScore",
+      "expected": 2,
+      "actual": 2,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "move.camin-sokal",
+      "category": "move scoring",
+      "description": "Camin-Sokal-only weights reproduce Sankoff on irreversible costs",
+      "reference": "phoenix-infer sankoffScore with caminSokalCost",
+      "expected": 4,
+      "actual": 4,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "move.mixed",
+      "category": "move scoring",
+      "description": "Combined weights equal the hand-computed weighted sum",
+      "reference": "hand computation on 0,0,2,2 with Wagner 1 and Dollo 1: root 0 costs one gain plus two Wagner steps",
+      "expected": 3,
+      "actual": 3,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "move.zero-weights",
+      "category": "move scoring",
+      "description": "All-zero weights are rejected instead of silently using Fitch",
+      "reference": "explicit error handling",
+      "expected": true,
+      "actual": true,
+      "tolerance": null,
+      "pass": true
+    },
+    {
+      "id": "move.reconstruction-wagner",
+      "category": "move scoring",
+      "description": "Per-character reconstruction costs sum to the reported score",
+      "reference": "the reconstruction and the score come from one dynamic program",
+      "expected": 4,
+      "actual": 4,
+      "tolerance": 0.000001,
+      "pass": true
+    },
+    {
+      "id": "move.reconstruction-dollo",
+      "category": "move scoring",
+      "description": "Per-character reconstruction costs sum to the reported score",
+      "reference": "the reconstruction and the score come from one dynamic program",
+      "expected": 1,
+      "actual": 1,
+      "tolerance": 0.000001,
+      "pass": true
+    },
+    {
+      "id": "move.reconstruction-caminSokal",
+      "category": "move scoring",
+      "description": "Per-character reconstruction costs sum to the reported score",
+      "reference": "the reconstruction and the score come from one dynamic program",
+      "expected": 5,
+      "actual": 5,
+      "tolerance": 0.000001,
+      "pass": true
+    },
+    {
+      "id": "move.reconstruction-wagner+dollo",
+      "category": "move scoring",
+      "description": "Per-character reconstruction costs sum to the reported score",
+      "reference": "the reconstruction and the score come from one dynamic program",
+      "expected": 10,
+      "actual": 10,
+      "tolerance": 0.000001,
+      "pass": true
+    },
+    {
+      "id": "factor.constant-count",
+      "category": "recoding",
+      "description": "Characters 1 and 3 are constant and contribute no binary characters",
+      "reference": "hand inspection of the 3x3 matrix",
+      "expected": 2,
+      "actual": 2,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "factor.output-count",
+      "category": "recoding",
+      "description": "Only character 2 is variable, giving one binary character",
+      "reference": "hand inspection",
+      "expected": 1,
+      "actual": 1,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "factor.omission",
+      "category": "recoding",
+      "description": "Characters without a declared tree are omitted, as in PHYLIP",
+      "reference": "PHYLIP FACTOR documentation: characters with no description are omitted",
+      "expected": 2,
+      "actual": 2,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "factor.invalid-trees",
+      "category": "recoding",
+      "description": "All six malformed state trees are rejected",
+      "reference": "PHYLIP FACTOR error conditions: loops, disconnection, repeated pairs, absent states",
+      "expected": 0,
+      "actual": 0,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "factor.valid-trees",
+      "category": "recoding",
+      "description": "Valid linear and branching state trees are accepted",
+      "reference": "tree definition",
+      "expected": true,
+      "actual": true,
+      "tolerance": null,
+      "pass": true
+    },
+    {
+      "id": "contml.singular",
+      "category": "continuous ml",
+      "description": "A singular covariance matrix yields no likelihood rather than a spurious number",
+      "reference": "Cholesky factorisation fails on a non-positive-definite matrix",
+      "expected": true,
+      "actual": true,
+      "tolerance": null,
+      "pass": true
+    },
+    {
+      "id": "contml.too-few",
+      "category": "continuous ml",
+      "description": "A single taxon is rejected",
+      "reference": "input validation",
+      "expected": true,
+      "actual": true,
+      "tolerance": null,
+      "pass": true
+    },
+    {
+      "id": "invariants.no-signal",
+      "category": "invariants",
+      "description": "Data with no variation yields no supported topology",
+      "reference": "a constant alignment carries no split information",
+      "expected": null,
+      "actual": null,
+      "tolerance": null,
+      "pass": true
+    },
+    {
+      "id": "invariants.residual-zero",
+      "category": "invariants",
+      "description": "Constant data gives a zero residual for every topology",
+      "reference": "all pattern mass sits in one cell, whose 3x3 minors vanish",
+      "expected": 0,
+      "actual": 0,
+      "tolerance": 0,
+      "pass": true
+    },
+    {
+      "id": "docs.counts",
+      "category": "documentation",
+      "description": "The compatibility matrix counts match the program registry",
+      "reference": "registry is the single source of truth; the matrix is generated from it",
+      "expected": 0,
+      "actual": 0,
+      "tolerance": 0,
+      "pass": true
     },
     {
       "id": "programs.all-run",
