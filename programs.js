@@ -301,7 +301,7 @@ E 0.50 0.10 0.20 0.20`,
     $('programView').classList.remove('is-tree');
     $('programView').innerHTML = `
       <div class="interactive-head">
-        <div><span class="mini-label">STEPS ON THIS TREE</span><strong class="interactive-score">${score}</strong></div>
+        <div><span class="mini-label">${escapeHtml(session.criterionLabel.toUpperCase())} SCORE</span><strong class="interactive-score">${score}</strong></div>
         <div class="interactive-actions">
           <button class="download" id="interactiveUndo" ${session.canUndo() ? '' : 'disabled'}>↶ Undo</button>
           <button class="download" id="interactiveGreedy">↧ Finish search</button>
@@ -329,11 +329,22 @@ E 0.50 0.10 0.20 0.20`,
 
   function siteTable(session) {
     const rows = session.siteReconstruction(10);
-    const lines = ['Most-parsimonious reconstruction on the current tree', ''];
-    lines.push('site   changes   states at the root');
-    for (const r of rows) lines.push(String(r.site).padStart(4) + '   ' + String(r.changes).padStart(5) + '     ' + r.states.join(','));
+    const lines = [
+      `Most-parsimonious reconstruction on the current tree — ${session.criterionLabel}`,
+      ''
+    ];
+    lines.push('site   cost   branches changed   states at the root');
+    for (const r of rows) {
+      lines.push(
+        String(r.site).padStart(4) +
+        String(r.cost).padStart(7) +
+        String(r.changes).padStart(19) +
+        '   ' + (r.rootStates.length ? r.rootStates.join(',') : '?')
+      );
+    }
     lines.push('');
-    lines.push('Apply rearrangements above and watch this table change.');
+    lines.push('The cost column uses the same criterion as the score, so the column sums to the score above.');
+    lines.push('Ties between equally parsimonious reconstructions are broken toward the lowest state index.');
     return lines.join('\n');
   }
 
