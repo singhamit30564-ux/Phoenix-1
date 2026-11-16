@@ -676,6 +676,7 @@
 
   function formatLength(v) {
     if (!isFinite(v)) return '—';
+    if (Math.abs(v) < 1e-12) return '0';
     if (Math.abs(v) >= 0.001) return v.toFixed(4);
     return v.toExponential(2);
   }
@@ -688,7 +689,15 @@
     const padTop = 24, padBottom = 20, padLeft = 20, labelWidth = opts.labelWidth || 190;
     const height = Math.max(160, names.length * rowHeight + padTop + padBottom);
     const plotWidth = width - padLeft - labelWidth;
-    const cladogram = opts.style === 'cladogram';
+    // A tree whose branch lengths are all zero (for example a consensus tree)
+    // has no horizontal extent, so a phylogram would pile every node on the
+    // left edge. Fall back to the cladogram layout in that case.
+    const totalLength = (() => {
+      let sum = 0;
+      leaves(tree).forEach(l => { sum += Math.abs(l.length || 0); });
+      return sum;
+    })();
+    const cladogram = opts.style === 'cladogram' || totalLength < 1e-9;
     const ctx = buildLayout(tree, cladogram);
     const maxX = ctx.maxX || 1;
     const y = new Map();
@@ -711,6 +720,15 @@
       }
     }
     walk(tree);
+    const support = [];
+    (function walk(node) {
+      if (!node.children) return;
+      if (node.support !== undefined && node.support !== null) {
+        support.push(`<text x="${(node.__x + 4).toFixed(2)}" y="${(node.__y - 6).toFixed(2)}" font-family="DM Mono, monospace" font-size="9.5" fill="#7f9384">${Number(node.support).toFixed(1)}</text>`);
+      }
+      node.children.forEach(walk);
+    })(tree);
+
     const labels = names.map(n => {
       const leaf = leaves(tree).find(l => l.name === n);
       const yy = y.get(n);
@@ -721,6 +739,7 @@
     parts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Phylogenetic tree" style="width:100%;height:auto">`);
     parts.push(ticks);
     parts.push(lines.join(''));
+    parts.push(support.join(''));
     parts.push(labels);
     parts.push('</svg>');
     return parts.join('');
@@ -779,6 +798,15 @@
         walk(c);
       }
     })(tree);
+    const support = [];
+    (function walk(node) {
+      if (!node.children) return;
+      if (node.support !== undefined && node.support !== null) {
+        support.push(`<text x="${(node.__x + 4).toFixed(2)}" y="${(node.__y - 6).toFixed(2)}" font-family="DM Mono, monospace" font-size="9.5" fill="#7f9384">${Number(node.support).toFixed(1)}</text>`);
+      }
+      node.children.forEach(walk);
+    })(tree);
+
     const labels = names.map(n => {
       const leaf = leaves(tree).find(l => l.name === n);
       const [x, y] = P(leaf.__a, Math.min(1.06, leaf.__r + 0.04));
@@ -795,12 +823,20 @@
 
   /** Plain-text tree for the report pane. */
   function asciiTree(tree, opts = {}) {
-    const showLengths = opts.lengths !== false;
+    let anyLength = false;
+    (function walk(n) { if (n !== tree && n.length) anyLength = true; if (n.children) n.children.forEach(walk); })(tree);
+    const showLengths = (opts.lengths !== false) && anyLength;
     const lines = [];
     const label = n => {
-      const name = n.name || '';
+      let name = n.name || '';
+      if (!n.children && n.support !== undefined && n.support !== null) {
+        name += ` [${Number(n.support).toFixed(1)}]`;
+      } else if (n.children && n.support !== undefined && n.support !== null) {
+        name += ` [${Number(n.support).toFixed(1)}]`;
+      }
       if (!showLengths || n.length === undefined || n.length === null) return name;
-      return name ? `${name}:${formatLength(n.length)}` : `${formatLength(n.length)}`;
+      const length = formatLength(n.length);
+      return name ? `${name}:${length}` : length;
     };
     (function walk(node, prefix, isLast, isRoot) {
       const connector = isRoot ? '' : (isLast ? '└── ' : '├── ');
