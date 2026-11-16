@@ -834,14 +834,11 @@
   program({
     id: 'FACTOR', title: 'Multistate to binary recoding', category: 'Diagnostics', input: 'discrete',
     summary: 'Recodes multistate characters into binary characters using a character-state tree, so the result can be analysed by the two-state programs. Reports the mapping and verifies that the recoding is reversible.',
-    options: [chk('deleteConstant', 'Delete constant characters', true)],
-    run: ({ text, opts }) => {
-      const { stateTrees, cleaned } = extractStateSpec(text);
+    options: [],
+    run: ({ text }) => {
+      const { stateTrees, cleaned, described } = extractStateSpec(text);
       const { chars, names } = sequenceInput(cleaned, 'discrete');
       const result = S.factorRecode(chars, names, { stateTrees });
-      if (result.mismatches) throw new Error('Internal error: the recoding failed its reversibility check.');
-      // Constant characters are always reported; dropping them is what FACTOR does.
-      const kept = opts.deleteConstant === false ? null : result.deleted;
       const lines = ['Recoded data set (PHYLIP, one column per binary character)', '', S.toPhylip(names, result.binary), ''];
       lines.push('Character mapping');
       lines.push('original  states        binary character(s)   state tree');
@@ -853,20 +850,28 @@
           m.edges.map(e => `${e[0]}-${e[1]}`).join(' ')
         );
       }
-      if (kept && kept.length) {
+      if (result.omitted.length) {
         lines.push('');
-        lines.push(`Deleted as constant: ${kept.map(d => d.character).join(', ')}`);
+        lines.push(`Omitted (no character-state tree supplied): ${result.omitted.map(d => d.character).join(', ')}`);
+      }
+      if (result.constant.length) {
+        lines.push('');
+        lines.push(`Uninformative, so no binary characters: ${result.constant.map(d => d.character).join(', ')}`);
       }
       lines.push('');
       lines.push(`${result.sites} characters in, ${result.binary.length} binary characters out; reversibility check passed for every observed state.`);
+      const notes = [
+        'FACTOR recodes states related by a character-state tree. Unordered multistate characters have no such tree and are left to PARS.',
+        'Each edge of the state tree becomes one binary character: 1 for taxa on the derived side of that edge.',
+        'Declare a tree with "#state 3: 0-1 1-2" (or "0:1 1:2") before the sequences. As in PHYLIP, when any tree is declared the characters without one are omitted from the output.'
+      ];
+      if (!described) {
+        notes.push('No character-state tree was declared, so Phoenix used a linear chain over the observed states of every character. PHYLIP requires an explicit description per character.');
+      }
       return {
         kind: 'report',
         text: lines.join('\n'),
-        notes: [
-          'FACTOR recodes states related by a character-state tree. Unordered multistate characters have no such tree and are left to PARS.',
-          'Each edge of the state tree becomes one binary character: 1 for taxa on the derived side of that edge.',
-          'Phoenix derives the state tree from the observed states in numeric order unless you declare one.'
-        ],
+        notes,
         stats: [
           { label: 'IN', value: result.sites },
           { label: 'OUT', value: result.binary.length },
@@ -876,24 +881,38 @@
     }
   });
 
-  /** Optional "#state N: 0-1 1-2" lines declared alongside the data. */
+  /**
+   * Character-state trees declared alongside the data:
+   *   #state 3: 0-1 1-2
+   *   #state 3: 0:1 1:2
+   * A leading "." (PHYLIP's ancestral-state marker, as in ".:0") is accepted
+   * and ignored, since Phoenix roots each state tree at its lowest state.
+   */
   function extractStateSpec(text) {
     const stateTrees = {};
     const kept = [];
+    let described = false;
     for (const raw of String(text).split(/\r?\n/)) {
       const m = /^\s*#state\s+(\d+)\s*:\s*(.+)$/i.exec(raw);
       if (!m) { kept.push(raw); continue; }
+      described = true;
       const index = Number(m[1]);
-      const edges = m[2].split(/[,\s]+/).filter(Boolean).map(pair => {
-        const mm = /^(\d+)-(\d+)$/.exec(pair);
-        if (!mm) throw new Error(`Could not read the state-tree edge "${pair}". Use pairs such as 0-1.`);
-        return [Number(mm[1]), Number(mm[2])];
-      });
+      if (stateTrees[index]) throw new Error(`Character ${index}: more than one state tree was declared.`);
+      const tokens = m[2].split(/[,\s]+/).filter(Boolean);
+      const edges = [];
+      for (const token of tokens) {
+        if (token === '.') continue;
+        const mm = /^(\d+)\s*[-:]\s*(\d+)$/.exec(token);
+        if (!mm) throw new Error(`Character ${index}: could not read the state-tree edge "${token}". Use pairs such as 0-1 or 0:1.`);
+        edges.push([Number(mm[1]), Number(mm[2])]);
+      }
+      if (!edges.length) throw new Error(`Character ${index}: the state tree is empty.`);
       stateTrees[index] = edges;
     }
-    return { stateTrees, cleaned: kept.join('\n') };
+    return { stateTrees, cleaned: kept.join('\n'), described };
   }
 
+  // ---- invariants
   // ---- invariants
   // ---- invariants
 
