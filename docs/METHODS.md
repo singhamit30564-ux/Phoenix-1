@@ -67,6 +67,32 @@ Searches use stepwise addition followed by nearest-neighbour interchange and
 random restarts. `DNAPENNY`, `PENNY` and `DOLPENNY` search exhaustively over
 addition orders; they do not implement branch-and-bound with bounds.
 
+## Interactive parsimony (DNAMOVE and MOVE)
+
+A session holds a working tree and scores it under one explicitly resolved
+criterion — never by fall-through:
+
+| Data | Criterion |
+| --- | --- |
+| DNA, protein | Fitch, unordered |
+| discrete, one weight non-zero | that criterion alone |
+| discrete, several weights non-zero | the weighted sum |
+| discrete, all weights zero | rejected with an error |
+
+For discrete data the per-branch cost is
+
+  *c*(*s* → *t*) = *w*<sub>W</sub>|*s* − *t*| + *w*<sub>CS</sub>(*t* − *s* if *t* ≥ *s*, else ∞)
+  + *w*<sub>D</sub>(gain + loss), where gain = [*s* = 0 and *t* > 0] and
+  loss = [*s* > 0 and *t* = 0], and the total number of gains on the tree is
+  limited to one when *w*<sub>D</sub> > 0.
+
+With only *w*<sub>W</sub> active this reduces to Sankoff with ordered costs; with
+only *w*<sub>D</sub> active to the binary Dollo criterion. The same dynamic
+program over (gains used, node state) also produces the ancestral
+reconstruction, so the states shown for a character are the states that achieve
+the reported score. Ties between equally parsimonious reconstructions are
+broken toward the lowest state index, and the interface says so.
+
 ## Character compatibility
 
 Two characters are compatible when the state sets induced by one character on
@@ -122,12 +148,32 @@ not Lake's linear invariant, and no significance test is applied.
 
 ## Recoding (FACTOR)
 
-Each multistate character is given a character-state tree (a linear chain of the
-observed states unless one is supplied with `#state N: a-b b-c` lines). Every
-edge of that tree becomes one binary character, set to 1 for taxa on the derived
-side. Since a state tree with *k* states has *k*−1 edges and every state
-corresponds to a unique pattern of edges, the recoding is exactly reversible, and
-the implementation verifies the round trip for every observed state.
+Each multistate character is given a character-state tree. Every edge of that
+tree becomes one binary character, set to 1 for taxa on the derived side. Since
+a state tree with *k* states has *k*−1 edges and every state corresponds to a
+unique pattern of edges, the recoding is exactly reversible, and the
+implementation verifies the round trip for every observed state.
+
+State trees are declared before the sequences as `#state 3: 0-1 1-2` (or
+`0:1 1:2`); a leading `.` root marker is accepted and ignored because Phoenix
+roots each state tree at its lowest state. Before recoding, every declared tree
+is checked for self-loops, repeated edges, cycles, disconnection, invalid state
+identifiers and observed states missing from the tree.
+
+Character handling follows PHYLIP: when at least one state tree is declared, a
+character without one is omitted from the output. A character whose observed
+states are all identical has a one-node state tree, no edges, and therefore
+contributes no binary characters. Both cases are reported separately. When no
+state tree is declared at all, Phoenix uses a linear chain over the observed
+states as a convenience, and says so.
+
+## Statement on PHYLIP equivalence
+
+Every validation in this repository compares Phoenix against a mathematical
+reference — a closed form, an exhaustive enumeration, a hand computation or a
+simulation with a known generating process. None of them compares Phoenix with
+output from the PHYLIP programs themselves. PHYLIP compatibility is therefore
+**not claimed**; see `validation/PHYLIP-DIFFERENTIAL.md`.
 
 ## Support
 
