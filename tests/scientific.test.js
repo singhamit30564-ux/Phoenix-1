@@ -118,21 +118,23 @@ test('FACTOR recoding is reversible for every state', () => {
   }
 });
 
-test('FACTOR deletes constant characters and keeps them out of the output', () => {
+test('FACTOR reports constant characters separately from the binary output', () => {
   const records = C.parseFasta('>A\n000\n>B\n000\n>C\n011\n>D\n011');
   const chars = C.encode(records, C.alphabet('discrete'));
   const names = records.map(r => r.name);
   const result = S.factorRecode(chars, names);
-  assert.strictEqual(result.deleted.length, 1, 'the constant character is dropped');
+  assert.deepStrictEqual(result.constant.map(c => c.character), [1], 'character 1 never varies');
   assert.strictEqual(result.binary.length, 2, 'each of the two variable characters gives one binary character');
+  assert.strictEqual(result.mismatches, 0);
 });
 
 test('FACTOR honours an explicit character-state tree', () => {
-  const records = C.parseFasta('>A\n000\n>B\n010\n>C\n020\n>D\n020');
+  const records = C.parseFasta('>A\n0\n>B\n1\n>C\n2\n>D\n2');
   const chars = C.encode(records, C.alphabet('discrete'));
   const names = records.map(r => r.name);
-  // Branching state tree: 1 is the ancestor of both 0 and 2.
+  // Branching state tree with 1 at the centre of 0 and 2.
   const result = S.factorRecode(chars, names, { stateTrees: { 1: [[1, 0], [1, 2]] } });
+  assert.strictEqual(result.mapping.length, 1);
   assert.strictEqual(result.mapping[0].edges.length, 2);
   assert.strictEqual(result.mismatches, 0);
 });
