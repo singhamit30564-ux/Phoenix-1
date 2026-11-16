@@ -1,0 +1,77 @@
+{
+  "suite": "Phoenix browser checks",
+  "generatedAt": "2026-11-16T11:36:14.865Z",
+  "url": "file:///tmp/phx/index.html",
+  "summary": {
+    "checks": 12,
+    "passed": 12,
+    "failed": 0,
+    "viewports": [
+      "mobile: overflow 0px",
+      "tablet: overflow 0px",
+      "desktop: overflow 0px"
+    ]
+  },
+  "results": [
+    {
+      "name": "catalogue lists 35 programs",
+      "pass": true,
+      "detail": "found 35"
+    },
+    {
+      "name": "all 35 programs render a result with metadata",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "three guided demos run end to end",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "distance run enables CSV and JSON export",
+      "pass": true,
+      "detail": "csv=true json=true"
+    },
+    {
+      "name": "running the same program twice is stable",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "malformed input produces a readable error",
+      "pass": true,
+      "detail": "First line must be \"<sequences> <sites>\"."
+    },
+    {
+      "name": "no horizontal overflow at mobile (390px)",
+      "pass": true,
+      "detail": "overflow 0px"
+    },
+    {
+      "name": "no horizontal overflow at tablet (820px)",
+      "pass": true,
+      "detail": "overflow 0px"
+    },
+    {
+      "name": "no horizontal overflow at desktop (1440px)",
+      "pass": true,
+      "detail": "overflow 0px"
+    },
+    {
+      "name": "no uncaught page errors",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "no console errors",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "no failed network requests",
+      "pass": true,
+      "detail": ""
+    }
+  ]
+}
