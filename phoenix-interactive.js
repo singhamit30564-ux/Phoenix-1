@@ -100,9 +100,14 @@
    */
   function solveCharacter(tree, column, names, weights, nStates) {
     const index = new Map(names.map((n, i) => [n, i]));
-    const size = G * nStates;
+    // The gain budget is a global resource and only exists when Dollo is
+    // active. Tracking it for Wagner-only or Camin-Sokal-only runs would
+    // wrongly forbid solutions that use several gains.
+    const trackGains = weights.dollo > 0;
+    const dims = trackGains ? 2 : 1;
+    const size = dims * nStates;
     const dp = new Map();
-    const pick = new Map();
+    const plan = new Map();
 
     C.postorder(tree, node => {
       const table = new Float64Array(size).fill(INF);
@@ -110,75 +115,110 @@
         const v = column[index.get(node.name)];
         const allowed = [];
         for (let s = 0; s < nStates; s++) if (v[s] > 0) allowed.push(s);
-        if (!allowed.length) {
-          table.fill(0);                       // unobserved: compatible with all states
-        } else {
-          for (let g = 0; g < G; g++) for (const s of allowed) table[g * nStates + s] = 0;
-        }
+        if (!allowed.length) table.fill(0);          // unobserved: any state, no gain
+        else for (const s of allowed) table[s] = 0;  // a tip never spends a gain itself
         dp.set(node, table);
-        pick.set(node, null);
+        plan.set(node, null);
         return;
       }
-      const choices = new Array(size).fill(null);
-      for (let g = 0; g < G; g++) {
+
+      const plans = new Array(size).fill(null);
+      for (let g = 0; g < dims; g++) {
         for (let s = 0; s < nStates; s++) {
-          let total = 0;
+          // Children are combined one after another so that a gain spent in
+          // one subtree is no longer available in its siblings.
+          let acc = new Float64Array(dims).fill(INF);
+          acc[0] = 0;
+          const perChild = [];
           let feasible = true;
-          const chosen = [];
           for (const child of node.children) {
             const ct = dp.get(child);
-            let best = INF, bestChild = -1, bestBudget = 0;
-            for (let c = 0; c < nStates; c++) {
-              const gain = isGain(s, c);
-              if (gain > g) continue;
-              const step = edgeCost(s, c, weights);
-              if (step >= INF) continue;
-              for (let gc = 0; gc + gain <= g; gc++) {
-                const v = ct[gc * nStates + c];
-                if (v >= INF) continue;
-                const cand = v + step;
-                if (cand < best - 1e-12) { best = cand; bestChild = c; }
+            const next = new Float64Array(dims).fill(INF);
+            const decision = new Array(dims).fill(null);
+            for (let used = 0; used <= g; used++) {
+              if (acc[used] >= INF) continue;
+              for (let c = 0; c < nStates; c++) {
+                const step = edgeCost(s, c, weights);
+                if (step >= INF) continue;
+                // Only Dollo spends budget on a 0 -> derived transition; for the
+                // other criteria an upward move is just an ordinary step.
+                const gain = trackGains ? isGain(s, c) : 0;
+                for (let gc = 0; used + gain + gc <= g; gc++) {
+                  const v = ct[gc * nStates + c];
+                  if (v >= INF) continue;
+                  const candidate = acc[used] + step + v;
+                  const nu = used + gain + gc;
+                  if (candidate < next[nu] - 1e-12) {
+                    next[nu] = candidate;
+                    decision[nu] = { c, budget: gc, from: used };
+                  }
+                }
               }
             }
-            if (best >= INF) { feasible = false; break; }
-            total += best;
-            chosen.push({ state: bestChild, budget: bestBudget });
+            if (next.every(x => x >= INF)) { feasible = false; break; }
+            perChild.push(decision);
+            acc = next;
           }
-          table[g * nStates + s] = feasible ? total : INF;
-          choices[g * nStates + s] = feasible ? chosen : null;
+          if (!feasible) continue;
+          let bestUsed = -1, bestCost = INF;
+          for (let used = 0; used <= g; used++) {
+            if (acc[used] < bestCost - 1e-12) { bestCost = acc[used]; bestUsed = used; }
+          }
+          if (bestUsed < 0) continue;
+          table[g * nStates + s] = bestCost;
+          plans[g * nStates + s] = { used: bestUsed, perChild };
         }
       }
       dp.set(node, table);
-      pick.set(node, choices);
+      plan.set(node, plans);
     });
 
     const rootTable = dp.get(tree);
-    let bestCost = INF, bestG = 0, bestS = 0;
-    for (let g = 0; g < G; g++) {
+    let bestCost = INF, bestG = -1, bestS = -1;
+    for (let g = 0; g < dims; g++) {
       for (let s = 0; s < nStates; s++) {
         const v = rootTable[g * nStates + s];
         if (v < bestCost - 1e-12) { bestCost = v; bestG = g; bestS = s; }
       }
     }
-    if (!isFinite(bestCost) || bestCost >= INF) {
-      return { cost: INF, states: new Map(), rootState: -1, changes: 0 };
+    if (bestG < 0 || !isFinite(bestCost) || bestCost >= INF) {
+      return { cost: INF, states: new Map(), rootState: -1, changes: 0, gains: 0, losses: 0 };
     }
 
     const states = new Map();
-    let changes = 0;
+    const edges = [];
     (function trace(node, g, s) {
       states.set(node, s);
       if (!node.children) return;
-      const chosen = pick.get(node)[g * nStates + s];
-      if (!chosen) return;
-      node.children.forEach((child, k) => {
-        const { state: c, budget } = chosen[k];
-        if (c !== s) changes++;
-        trace(child, budget, c);
-      });
+      const entry = plan.get(node)[g * nStates + s];
+      if (!entry) return;
+      let used = entry.used;
+      // Walk the per-child decisions backwards: each records the usage it
+      // inherited and the usage it produced.
+      for (let k = node.children.length - 1; k >= 0; k--) {
+        const decision = entry.perChild[k][used];
+        if (!decision) break;
+        const child = node.children[k];
+        edges.push([s, decision.c]);
+        trace(child, decision.budget, decision.c);
+        used = decision.from;
+      }
     })(tree, bestG, bestS);
 
-    return { cost: bestCost, states, rootState: bestS, changes };
+    let gains = 0, losses = 0;
+    for (const [from, to] of edges) {
+      if (from === 0 && to > 0) gains++;
+      else if (from > 0 && to === 0) losses++;
+    }
+
+    return {
+      cost: bestCost,
+      states,
+      rootState: bestS,
+      changes: edges.filter(([from, to]) => from !== to).length,
+      gains,
+      losses
+    };
   }
 
   // ------------------------------------------------------------- Fitch path
@@ -357,6 +397,8 @@
             site: s + 1,
             cost: Number(solved.cost.toFixed(3)),
             changes: solved.changes,
+            gains: solved.gains,
+            losses: solved.losses,
             rootStates: solved.rootState >= 0 ? [solved.rootState] : []
           });
         }
