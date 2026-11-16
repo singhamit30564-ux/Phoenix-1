@@ -1,5 +1,57 @@
 # Changelog
 
+## Review remediation (PR #3 follow-up)
+
+Fixes four defects found in the corrections themselves.
+
+### MOVE scored with Fitch instead of Wagner
+
+- The weighted branch in `phoenix-interactive.js` was guarded by
+  `if (weights.dollo || weights.caminSokal)`, so the default configuration
+  (Wagner 1, Dollo 0, Camin–Sokal 0) fell through to `fitchScore`. On a data set
+  where the two criteria differ (`0,0,2,2` costs 2 under ordered Wagner and 1
+  under unordered Fitch) the session now reports 2.
+- `resolveCriterion()` replaces the fall-through: DNA and protein data use
+  Fitch; discrete data resolve to exactly one named criterion or to `mixed`.
+  All-zero or negative weights raise an error rather than degrading silently.
+- An explicit `{ dollo: 1 }` is no longer widened to "Dollo plus Wagner"; only a
+  completely absent weight specification defaults to Wagner.
+
+### Reconstruction ignored the scored criterion
+
+- `siteReconstruction()` used Fitch set intersection for every criterion. It now
+  runs the same dynamic program over (gains used, state) that produces the
+  score, so per-character reconstruction costs sum exactly to the reported
+  score, in Wagner, Dollo, Camin–Sokal and mixed modes.
+
+### FACTOR constant-character option did nothing
+
+- `factorRecode()` dropped constant characters before `deleteConstant` was
+  consulted, so the option had no effect. The option is removed.
+- Behaviour now follows PHYLIP: with any state tree declared, characters without
+  one are omitted; a character whose states are all identical has a one-node
+  tree, no edges, and contributes no binary characters. Both cases are reported
+  separately.
+
+### Character-state trees were not validated
+
+- `validateStateTree()` rejects self-loops, repeated edges, cycles,
+  disconnection, invalid identifiers and observed states missing from the tree,
+  naming the character in every message.
+
+### Documentation
+
+- `docs/AUDIT.md` records the second remediation round and reconciles the status
+  counts with the program registry (15 validated, 12 documented differences,
+  8 partial, 0 exploratory).
+- `docs/METHODS.md` documents the criterion dispatch, the reconstruction dynamic
+  program and the FACTOR character-handling rules.
+- `validation/PHYLIP-DIFFERENTIAL.md` states explicitly that no PHYLIP
+  differential comparison has been performed, and records the protocol for one.
+- `validation/validate.js` grows from 36 to 58 checks, including a check that the
+  compatibility matrix counts match the registry.
+
+
 ## Scientific audit and validation (branch `feature/scientific-audit-and-validation`)
 
 ### Corrected algorithm mappings
