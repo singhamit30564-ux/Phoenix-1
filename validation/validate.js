@@ -20,6 +20,7 @@ const S = require('../phoenix-support.js');
 const PC = require('../phoenix-continuous.js');
 const PI = require('../phoenix-interactive.js');
 const L = require('../phoenix-linalg.js');
+const PIF = require('../phoenix-interactive.js');
 const P = require('../phoenix-programs.js');
 
 const checks = [];
@@ -482,6 +483,145 @@ function reconstructTree(root) {
   checkTrue('interactive.consistency', 'interactive',
     'Applying a rearrangement produces exactly the score that was advertised, and undo restores the previous score',
     'session bookkeeping', consistent, `start=${start}`);
+}
+
+// 23. MOVE uses the ordered Wagner criterion by default, not Fitch
+{
+  // One character, states 0,0,2,2 on ((A,B),(C,D)):
+  //   ordered Wagner: one move of two steps  -> 2
+  //   unordered Fitch: one change            -> 1
+  const records = C.parseFasta('>A\n0\n>B\n0\n>C\n2\n>D\n2');
+  const chars = C.encode(records, C.alphabet('discrete'));
+  const names = records.map(r => r.name);
+  const tree = C.parseNewick('((A,B),(C,D));');
+  const wagner = I.sankoffScore(tree, chars, names, I.wagnerCost(10));
+  const fitch = I.fitchScore(tree, chars, names);
+  check('move.wagner-vs-fitch', 'move scoring',
+    'The two criteria disagree on this data set, so the default can be identified',
+    'hand computation: ordered costs 2, unordered costs 1', 2, wagner, 0);
+  check('move.fitch-differs', 'move scoring', 'Fitch scores the same data as 1',
+    'hand computation', 1, fitch, 0);
+  const session = PIF.createSession({ chars, names, kind: 'discrete', weights: { wagner: 1 }, initialTree: tree });
+  check('move.default-wagner', 'move scoring', 'MOVE scores with Wagner, not Fitch',
+    'comparison with sankoffScore and fitchScore', wagner, session.score(), 0);
+}
+
+// 24. Each MOVE criterion agrees with its independent implementation
+{
+  const records = C.parseFasta('>A\n0120\n>B\n0121\n>C\n0211\n>D\n0210');
+  const chars = C.encode(records, C.alphabet('discrete'));
+  const names = records.map(r => r.name);
+  const tree = C.parseNewick('((A,B),(C,D));');
+  const run = weights => PIF.createSession({ chars, names, kind: 'discrete', weights, initialTree: tree }).score();
+  check('move.wagner', 'move scoring', 'Wagner-only weights reproduce Sankoff on ordered costs',
+    'phoenix-infer sankoffScore with wagnerCost', I.sankoffScore(tree, chars, names, I.wagnerCost(10)), run({ wagner: 1 }), 0);
+  check('move.dollo', 'move scoring', 'Dollo-only weights reproduce the Dollo criterion',
+    'phoenix-infer dolloScore', I.dolloScore(tree, chars, names), run({ dollo: 1 }), 0);
+  check('move.camin-sokal', 'move scoring', 'Camin-Sokal-only weights reproduce Sankoff on irreversible costs',
+    'phoenix-infer sankoffScore with caminSokalCost', I.sankoffScore(tree, chars, names, I.caminSokalCost(10)), run({ caminSokal: 1 }), 0);
+  const ordered = C.encode(C.parseFasta('>A\n0\n>B\n0\n>C\n2\n>D\n2'), C.alphabet('discrete'));
+  check('move.mixed', 'move scoring', 'Combined weights equal the hand-computed weighted sum',
+    'hand computation on 0,0,2,2 with Wagner 1 and Dollo 1: root 0 costs one gain plus two Wagner steps',
+    3, PIF.createSession({ chars: ordered, names: ['A', 'B', 'C', 'D'], kind: 'discrete', weights: { wagner: 1, dollo: 1 }, initialTree: C.parseNewick('((A,B),(C,D));') }).score(), 0);
+  let rejected = false;
+  try { PIF.createSession({ chars, names, kind: 'discrete', weights: { wagner: 0, dollo: 0, caminSokal: 0 }, initialTree: tree }); } catch (_) { rejected = true; }
+  checkTrue('move.zero-weights', 'move scoring', 'All-zero weights are rejected instead of silently using Fitch',
+    'explicit error handling', rejected);
+}
+
+// 25. MOVE reconstruction is consistent with the score it reports
+{
+  const records = C.parseFasta('>A\n0120\n>B\n0121\n>C\n0211\n>D\n0210');
+  const chars = C.encode(records, C.alphabet('discrete'));
+  const names = records.map(r => r.name);
+  for (const weights of [{ wagner: 1 }, { dollo: 1 }, { caminSokal: 1 }, { wagner: 2, dollo: 1 }]) {
+    const session = PIF.createSession({ chars, names, kind: 'discrete', weights });
+    const sum = session.siteReconstruction(100).reduce((a, r) => a + r.cost, 0);
+    check(`move.reconstruction-${Object.keys(weights).join('+')}`, 'move scoring',
+      'Per-character reconstruction costs sum to the reported score',
+      'the reconstruction and the score come from one dynamic program', session.score(), sum, 1e-6);
+  }
+}
+
+// 26. FACTOR character handling follows the documented behaviour
+{
+  const records = C.parseFasta('>A\n001\n>B\n001\n>C\n011');
+  const chars = C.encode(records, C.alphabet('discrete'));
+  const result = S.factorRecode(chars, ['A', 'B', 'C']);
+  check('factor.constant-count', 'recoding', 'Characters 1 and 3 are constant and contribute no binary characters',
+    'hand inspection of the 3x3 matrix', 2, result.constant.length, 0);
+  check('factor.output-count', 'recoding', 'Only character 2 is variable, giving one binary character',
+    'hand inspection', 1, result.binary.length, 0);
+  const declared = S.factorRecode(chars, ['A', 'B', 'C'], { stateTrees: { 2: [[0, 1]] } });
+  check('factor.omission', 'recoding', 'Characters without a declared tree are omitted, as in PHYLIP',
+    'PHYLIP FACTOR documentation: characters with no description are omitted', 2, declared.omitted.length, 0);
+}
+
+// 27. Invalid character-state trees are rejected
+{
+  const cases = [
+    ['disconnected', [[0, 1], [2, 3]], [0, 1, 2, 3]],
+    ['cyclic', [[0, 1], [1, 2], [2, 0]], [0, 1, 2]],
+    ['duplicate', [[0, 1], [1, 0]], [0, 1]],
+    ['self-loop', [[0, 0]], [0]],
+    ['missing-state', [[0, 1]], [0, 1, 2]],
+    ['invalid-identifier', [[0, 12]], [0, 12]]
+  ];
+  let accepted = 0;
+  for (const [, edges, observed] of cases) {
+    try { S.validateStateTree(edges, observed, 1); accepted++; } catch (_) { /* expected */ }
+  }
+  check('factor.invalid-trees', 'recoding', 'All six malformed state trees are rejected',
+    'PHYLIP FACTOR error conditions: loops, disconnection, repeated pairs, absent states', 0, accepted, 0);
+  checkTrue('factor.valid-trees', 'recoding', 'Valid linear and branching state trees are accepted',
+    'tree definition', (() => {
+      try {
+        S.validateStateTree([[0, 1], [1, 2], [2, 3]], [0, 1, 2, 3], 1);
+        S.validateStateTree([[1, 0], [1, 2], [1, 3]], [0, 1, 2, 3], 2);
+        return true;
+      } catch (_) { return false; }
+    })());
+}
+
+// 28. CONTML rejects degenerate input instead of returning a number
+{
+  // Two taxa with identical character vectors give a singular covariance.
+  const singular = PC.remlLogLik([[1, 0], [0, 1]], [[0.5, 0.5], [0.5, 0.5]]);
+  checkTrue('contml.singular', 'continuous ml', 'A singular covariance matrix yields no likelihood rather than a spurious number',
+    'Cholesky factorisation fails on a non-positive-definite matrix', singular === null || !Number.isFinite(singular.logLikelihood));
+  let threw = false;
+  try { PC.fit([[0.1], [0.2]], ['A'], { sweeps: 1 }); } catch (_) { threw = true; }
+  checkTrue('contml.too-few', 'continuous ml', 'A single taxon is rejected', 'input validation', threw);
+}
+
+// 29. DNAINVAR with no informative sites
+{
+  const records = C.parseFasta('>A\nAAAA\n>C\nAAAA\n>B\nAAAA\n>D\nAAAA');
+  const chars = C.encode(records, C.alphabet('dna'));
+  const inv = S.invariants(chars, ['A', 'C', 'B', 'D']);
+  check('invariants.no-signal', 'invariants', 'Data with no variation yields no supported topology',
+    'a constant alignment carries no split information', null, inv.bestSplit);
+  check('invariants.residual-zero', 'invariants', 'Constant data gives a zero residual for every topology',
+    'all pattern mass sits in one cell, whose 3x3 minors vanish', 0, inv.results['12|34'].sumSquares, 0);
+}
+
+// 30. Documentation counts agree with the program registry
+{
+  const fs = require('fs');
+  const path = require('path');
+  const doc = fs.readFileSync(path.join(__dirname, '..', 'docs', 'COMPATIBILITY.md'), 'utf8');
+  const counts = {};
+  for (const m of doc.matchAll(/^\| ([a-z][a-z ]+) \| (\d+) \|$/gm)) counts[m[1]] = Number(m[2]);
+  const registry = P.catalogue().reduce((acc, p) => {
+    acc[p.status] = (acc[p.status] || 0) + 1;
+    return acc;
+  }, {});
+  let mismatches = 0;
+  for (const status of ['validated', 'documented differences', 'partial', 'exploratory']) {
+    if ((counts[status] || 0) !== (registry[status] || 0)) mismatches++;
+  }
+  check('docs.counts', 'documentation', 'The compatibility matrix counts match the program registry',
+    'registry is the single source of truth; the matrix is generated from it', 0, mismatches, 0);
 }
 
 // 22. Every program runs and returns a structured result
