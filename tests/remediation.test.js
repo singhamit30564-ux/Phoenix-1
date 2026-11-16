@@ -306,3 +306,143 @@ test('FACTOR program reports omission and uninformative characters', () => {
   assert.match(out.text, /Uninformative/);
   assert.strictEqual(out.stats.find(s => s.label === 'REVERSIBLE').value, 'yes');
 });
+
+// ------------------------------------------------ Dollo gain-budget regression
+//
+// These tests compare against exhaustive enumeration of every internal-state
+// assignment, written here rather than in the implementation, so a shared bug
+// in the dynamic program cannot make them pass.
+
+function bruteForceDollo(newick, tipStates, names) {
+  const tree = C.parseNewick(newick);
+  const internals = [];
+  (function walk(n) { if (n.children) { internals.push(n); n.children.forEach(walk); } })(tree);
+  const leaves = [];
+  (function walk(n) { if (!n.children) leaves.push(n); else n.children.forEach(walk); })(tree);
+  const byName = new Map(names.map((n, i) => [n, i]));
+  let best = Infinity, bestGains = 0, bestLosses = 0;
+  for (let mask = 0; mask < 2 ** internals.length; mask++) {
+    const assign = new Map();
+    internals.forEach((n, i) => assign.set(n, (mask >> i) & 1));
+    leaves.forEach(l => assign.set(l, tipStates[byName.get(l.name)] > 0 ? 1 : 0));
+    let gains = 0, losses = 0;
+    (function walk(n) {
+      if (!n.children) return;
+      for (const c of n.children) {
+        const a = assign.get(n), b = assign.get(c);
+        if (a === 0 && b === 1) gains++;
+        else if (a === 1 && b === 0) losses++;
+        walk(c);
+      }
+    })(tree);
+    const cost = gains + losses;
+    if (gains <= 1 && cost < best) { best = cost; bestGains = gains; bestLosses = losses; }
+  }
+  return { cost: best, gains: bestGains, losses: bestLosses };
+}
+
+function dolloCase(newick, states) {
+  const names = newick.replace(/[();:,]/g, '').split(/[()]/).join('').split(',').filter(Boolean);
+  const taxa = C.leaves(C.parseNewick(newick)).map(l => l.name);
+  void names;
+  const text = taxa.map((n, i) => `>${n}\n${states[i]}`).join('\n');
+  const records = C.parseFasta(text);
+  const chars = C.encode(records, C.alphabet('discrete'));
+  const namesInOrder = records.map(r => r.name);
+  const tree = C.parseNewick(newick);
+  return {
+    tree, chars, names: namesInOrder,
+    expected: bruteForceDollo(newick, states, namesInOrder)
+  };
+}
+
+test('Dollo matches exhaustive enumeration on several tree shapes', () => {
+  const cases = [
+    ['(((A,B),(C,D)),((E,F),(G,H)));', [1, 0, 1, 0, 1, 0, 0, 0]],
+    ['((A,B),(C,D));', [1, 0, 1, 0]],
+    ['((A,B),(C,D));', [1, 1, 0, 0]],
+    ['(((A,B),C),(D,E));', [1, 0, 1, 0, 1]],
+    ['((A,(B,C)),(D,E));', [0, 1, 0, 1, 1]],
+    ['((A,B),(C,(D,E)));', [1, 0, 0, 1, 0]]
+  ];
+  for (const [newick, states] of cases) {
+    const { tree, chars, names, expected } = dolloCase(newick, states);
+    const actual = I.dolloScore(tree, chars, names);
+    assert.strictEqual(actual, expected.cost, `${newick} ${states.join('')}`);
+  }
+});
+
+test('Dollo does not accept two independent gains as a cheap solution', () => {
+  // The previous implementation allowed each sibling subtree its own gain and
+  // returned 3 for this character. Three gains are illegal, so the true cost is
+  // 4: one gain plus three losses.
+  const { tree, chars, names, expected } = dolloCase('(((A,B),(C,D)),((E,F),(G,H)));', [1, 0, 1, 0, 1, 0, 0, 0]);
+  assert.strictEqual(expected.cost, 4, 'exhaustive enumeration says 4');
+  const actual = I.dolloScore(tree, chars, names);
+  assert.strictEqual(actual, 4);
+  assert.notStrictEqual(actual, 3, 'the illegal three-gain solution must not be reported');
+});
+
+test('Dollo reconstruction uses at most one gain', () => {
+  const { tree, chars, names } = dolloCase('(((A,B),(C,D)),((E,F),(G,H)));', [1, 0, 1, 0, 1, 0, 0, 0]);
+  const session = PI.createSession({ chars, names, kind: 'discrete', weights: { dollo: 1 }, initialTree: tree });
+  const row = session.siteReconstruction(1)[0];
+  assert.ok(row.gains <= 1, `gains ${row.gains}`);
+  assert.strictEqual(row.gains + row.losses, row.cost, 'cost equals gains plus losses');
+  assert.strictEqual(row.cost, 4);
+});
+
+test('Dollo reconstruction cost equals gains plus losses across characters', () => {
+  const { tree, chars, names } = dolloCase('((A,(B,C)),(D,E));', [0, 1, 0, 1, 1]);
+  const session = PI.createSession({ chars, names, kind: 'discrete', weights: { dollo: 1 }, initialTree: tree });
+  for (const row of session.siteReconstruction(100)) {
+    assert.strictEqual(row.gains + row.losses, row.cost);
+    assert.ok(row.gains <= 1);
+  }
+});
+
+test('Dollo handles missing observations', () => {
+  const records = C.parseFasta('>A\n?\n>B\n0\n>C\n1\n>D\n0');
+  const chars = C.encode(records, C.alphabet('discrete'));
+  const names = records.map(r => r.name);
+  const tree = C.parseNewick('((A,B),(C,D));');
+  const session = PI.createSession({ chars, names, kind: 'discrete', weights: { dollo: 1 }, initialTree: tree });
+  // One gain reaches C; the unknown tip costs nothing; B and D are already 0.
+  assert.strictEqual(session.score(), 1);
+});
+
+test('Dollo score is stable under a rearrangement', () => {
+  const { tree, chars, names } = dolloCase('(((A,B),(C,D)),((E,F),(G,H)));', [1, 0, 1, 0, 1, 0, 0, 0]);
+  const session = PI.createSession({ chars, names, kind: 'discrete', weights: { dollo: 1 }, initialTree: tree });
+  const before = session.score();
+  const move = session.moves()[0];
+  session.apply(move.id);
+  const after = session.score();
+  assert.strictEqual(after, before + move.delta);
+  const rows = session.siteReconstruction(100);
+  assert.strictEqual(rows.reduce((a, r) => a + r.cost, 0), after);
+  session.undo();
+  assert.strictEqual(session.score(), before);
+});
+
+test('Wagner is not capped by the Dollo gain budget', () => {
+  // Two separated derived clades: Wagner may use two upward moves.
+  const records = C.parseFasta('>A\n1\n>B\n0\n>C\n0\n>D\n1');
+  const chars = C.encode(records, C.alphabet('discrete'));
+  const names = records.map(r => r.name);
+  const tree = C.parseNewick('((A,B),(C,D));');
+  const session = PI.createSession({ chars, names, kind: 'discrete', weights: { wagner: 1 }, initialTree: tree });
+  assert.strictEqual(session.score(), I.sankoffScore(tree, chars, names, I.wagnerCost(10)));
+  // Ordered cost: two separate 0->1 moves cost 2, which requires two gains.
+  assert.strictEqual(session.score(), 2);
+});
+
+test('Camin-Sokal reconstruction reports no reversals', () => {
+  const records = C.parseFasta('>A\n0\n>B\n0\n>C\n2\n>D\n2');
+  const chars = C.encode(records, C.alphabet('discrete'));
+  const names = records.map(r => r.name);
+  const session = PI.createSession({ chars, names, kind: 'discrete', weights: { caminSokal: 1 }, initialTree: C.parseNewick('((A,B),(C,D));') });
+  const row = session.siteReconstruction(1)[0];
+  assert.strictEqual(row.rootStates[0], 0);
+  assert.strictEqual(row.cost, 2);
+});
